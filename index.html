@@ -13,11 +13,16 @@
       background: rgba(10,10,10,.75); color: #ffb37a; font: 13px monospace;
       border: 1px solid #ff7a2f; border-radius: 6px;
     }
+    #toggle {
+      margin-left: 12px; padding: 3px 10px; cursor: pointer;
+      background: #ff7a2f; color: #111; border: 0; border-radius: 4px; font: bold 12px monospace;
+    }
   </style>
 </head>
 <body>
   <div id="view"></div>
-  <div id="hud">MARS · cursor: <span id="coords">--</span></div>
+  <div id="hud">MARS · <span id="coords">--</span>
+    <button id="toggle" disabled>Loading…</button></div>
 
   <script>
   // ---- OPTION A (default): load the public Esri/USGS Mars services directly.
@@ -28,12 +33,15 @@
   // (an async function used directly as the require callback can stall).
   const loadModules = (names) => new Promise((ok, fail) => require(names, (...m) => ok(m), fail));
 
+  const MARS_SR = { wkid: 104971 };   // Mars 2000 (sphere), used by the Esri Mars services
+  let currentView = null;
+
   main().catch(err => console.error("Map failed to start:", err));
 
+
   async function main() {
-    const [Map, MapView, Basemap, Layer, LayerList, Expand, ScaleBar] = await loadModules([
-      "esri/Map", "esri/views/MapView", "esri/Basemap", "esri/layers/Layer",
-      "esri/widgets/LayerList", "esri/widgets/Expand", "esri/widgets/ScaleBar"
+    const [Map, Basemap, Layer, ElevationLayer] = await loadModules([
+      "esri/Map", "esri/Basemap", "esri/layers/Layer", "esri/layers/ElevationLayer"
     ]);
 
     const base = "https://astro.arcgis.com/arcgis/rest/services/OnMars/";
@@ -66,45 +74,93 @@
 
     const basemapLayer = layers.find(l => l.s.basemap).lyr;
     const map = new Map({
-      // The basemap's spatial reference (Mars 2000) defines the map's coordinate system
       basemap: new Basemap({ baseLayers: [basemapLayer], title: "Mars" }),
-      layers: layers.filter(l => !l.s.basemap).map(l => l.lyr)
+      layers: layers.filter(l => !l.s.basemap).map(l => l.lyr),
+      // Real Mars elevation (HRSC + MOLA, 200 m). Used only by the 3D globe; 2D ignores it.
+      ground: { layers: [new ElevationLayer({
+        url: base + "MDEM200M/ImageServer", title: "Mars elevation"
+      })] }
     });
 
-    const view = new MapView({ container: "view", map, zoom: 2, center: [77.5, 18.4] }); // Jezero area
-
-    // ---- NASA Mars Trek: MOLA global surface roughness ----
-    // Trek publishes this as WMTS in GCS_Mars_2000 (EPSG 104905) and the Esri layers use
-    // Mars 2000 sphere (104971). ArcGIS can't reproject tiles between them, but both are
-    // plain lon/lat grids, so we place Trek's 8 tiles (zoom level 1 = 4 x 2 tiles of 90°)
-    // as georeferenced images. It's a ~20 km/pixel product, meant for regional overview.
-    const trekLayer = await addTrekLayer(view, {
+    // NASA Mars Trek: MOLA global surface roughness (see addTrekLayer below)
+    await addTrekLayer(map, {
       id: "mola_roughness",
       title: "MOLA surface roughness (NASA Trek)",
       opacity: 0.7,
       visible: true
     });
 
-    view.ui.add(new Expand({ view, content: new LayerList({ view }), expanded: true }), "top-right");
-    view.ui.add(new ScaleBar({ view, unit: "metric" }), "bottom-left");
+    // Start in 3D; the button in the HUD switches between globe and flat map
+    const btn = document.getElementById("toggle");
+    let mode = "3d";
+    await showView(map, mode);
+    btn.textContent = "Switch to 2D";
+    btn.onclick = async () => {
+      mode = mode === "3d" ? "2d" : "3d";
+      btn.disabled = true;
+      await showView(map, mode);
+      btn.textContent = mode === "3d" ? "Switch to 2D" : "Switch to 3D globe";
+      btn.disabled = false;
+    };
+  }
+
+  // Creates a 2D MapView or a 3D SceneView over the same map, keeping the place you were looking at.
+  async function showView(map, mode) {
+    const [MapView, SceneView, LayerList, Expand, ScaleBar] = await loadModules([
+      "esri/views/MapView", "esri/views/SceneView",
+      "esri/widgets/LayerList", "esri/widgets/Expand", "esri/widgets/ScaleBar"
+    ]);
+
+    // Remember where we were (default: Jezero Crater area)
+    let center = [77.5, 18.4], scale = 20000000;
+    if (currentView) {
+      if (currentView.center) center = [currentView.center.x, currentView.center.y];
+      scale = currentView.scale || scale;
+      currentView.container = null;
+      currentView.destroy();
+    }
+
+    // Give the center as a Mars point (a plain [lon, lat] array would be read as Earth WGS84)
+    const common = {
+      container: "view", map, spatialReference: MARS_SR, scale,
+      center: { type: "point", x: center[0], y: center[1], spatialReference: MARS_SR }
+    };
+    const view = mode === "3d"
+      ? new SceneView({
+          ...common,
+          qualityProfile: "high",
+          environment: { lighting: { type: "virtual" } }   // even light; Mars sun position isn't modeled
+        })
+      : new MapView(common);
+
+    view.ui.add(new Expand({ view, content: new LayerList({ view }), expanded: false }), "top-right");
+    if (mode === "2d") view.ui.add(new ScaleBar({ view, unit: "metric" }), "bottom-left");
 
     view.on("pointer-move", (e) => {
-      const p = view.toMap(e);
+      const p = view.toMap(e);   // null when the pointer is off the globe
       // Mars 2000 is a geographic system, so x/y are longitude/latitude in degrees
-      if (p) document.getElementById("coords").textContent =
-        `lat ${p.y.toFixed(3)}°, lon ${p.x.toFixed(3)}°`;
+      document.getElementById("coords").textContent = p
+        ? `lat ${p.y.toFixed(3)}°, lon ${p.x.toFixed(3)}°` + (mode === "3d" && p.z != null ? `, elev ${Math.round(p.z)} m` : "")
+        : "--";
     });
+
+    currentView = view;
+    await view.when();
+    return view;
   }
 
   // Adds a NASA Mars Trek global (EQ) layer as a set of georeferenced images.
+  // Trek uses GCS_Mars_2000 (104905) and the Esri layers Mars 2000 sphere (104971); ArcGIS
+  // can't reproject tiles between them, but both are lon/lat grids, so the tiles are placed
+  // as georeferenced images. mola_roughness is ~20 km/pixel: a regional overview.
   // Works for any Trek layer whose WMTS has a zoom level 1 with 4 x 2 tiles.
   // Find other layer ids in Trek: open the layer, its id is the "l=" value in the URL.
-  async function addTrekLayer(view, { id, title, opacity = 1, visible = true, level = 1 }) {
+  async function addTrekLayer(map, { id, title, opacity = 1, visible = true, level = 1 }) {
     const [MediaLayer, ImageElement, ExtentAndRotationGeoreference, Extent] = await loadModules([
       "esri/layers/MediaLayer", "esri/layers/support/ImageElement",
       "esri/layers/support/ExtentAndRotationGeoreference", "esri/geometry/Extent"
     ]);
-    const sr = view.spatialReference;
+    const sr = MARS_SR;
     const cols = 2 ** (level + 1), rows = 2 ** level, step = 180 / rows;   // level 1 → 4 x 2 tiles, 90° each
     const elements = [];
     for (let r = 0; r < rows; r++) {
@@ -122,7 +178,7 @@
       }
     }
     const layer = new MediaLayer({ source: elements, title, opacity, visible, spatialReference: sr });
-    view.map.add(layer);
+    map.add(layer);
     return layer;
   }
 
