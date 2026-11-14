@@ -32,8 +32,8 @@
     #topbar .stripes { width: 60px; height: 6px; background: repeating-linear-gradient(-45deg, var(--c) 0 4px, transparent 4px 8px); opacity: .7; }
     #coords { color: var(--c2); min-width: 280px; }
 
-    #left  { top: 70px; left: 60px; width: 190px; }
-    #right { top: 70px; right: 60px; width: 230px; }
+    #left  { top: 130px; left: 60px; width: 200px; max-height: calc(100% - 260px); overflow: auto; }
+    #right { top: 130px; right: 60px; width: 230px; }
     #bottom { left: 60px; right: 60px; bottom: 28px; display: flex; gap: 16px; align-items: stretch; }
 
     .btn {
@@ -60,9 +60,29 @@
       border: 2px solid rgba(57,215,255,.6); box-shadow: 0 0 12px rgba(57,215,255,.3) inset; }
     #compass::before { content: ""; position: absolute; inset: 12px; border-radius: 50%; border: 1px dashed rgba(57,215,255,.4); }
     #compass .n { position: absolute; top: 2px; left: 50%; transform: translateX(-50%); color: var(--c); font-size: 10px; }
-    #compassNeedle { position: absolute; left: 50%; top: 50%; width: 0; height: 0; transition: transform .2s; }
-    #compassNeedle::before { content: ""; position: absolute; left: -7px; top: -38px; border: 7px solid transparent;
-      border-bottom: 34px solid var(--c); filter: drop-shadow(0 0 4px var(--c)); }
+    #compassNeedle { position: absolute; left: 50%; top: 50%; width: 0; height: 0; transition: transform .25s;
+      --half: 7px; --needle: #39d7ff; }
+    /* arrow head: its half-width (--half) grows when climbing and shrinks when descending */
+    #compassNeedle::before { content: ""; position: absolute; left: calc(-1 * var(--half)); top: -38px;
+      border-left: var(--half) solid transparent; border-right: var(--half) solid transparent;
+      border-bottom: 34px solid var(--needle); filter: drop-shadow(0 0 4px var(--needle));
+      transition: left .3s, border-width .3s; }
+    #compassNeedle::after { content: ""; position: absolute; left: -3px; top: 0; border: 3px solid transparent;
+      border-top: 22px solid rgba(159,233,255,.35); }
+    #gradeText { text-align: center; font-weight: bold; letter-spacing: 1px; margin: -4px 0 8px; color: var(--c2); }
+    .radius { align-items: center; margin: 6px 0; }
+    #hazardRadius { background: #061a28; color: #e8fbff; border: 1px solid rgba(255,90,90,.6); font: 11px var(--mono); }
+
+    /* turn-by-turn banner */
+    #guidance { top: 64px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 14px;
+      padding: 8px 18px; min-width: 340px; }
+    #guidance[hidden] { display: none; }
+    #gIcon { font-size: 40px; line-height: 1; color: #fff; text-shadow: 0 0 10px var(--c); width: 44px; text-align: center; }
+    #gText { font: bold 17px var(--mono); color: #fff; }
+    #gDist { font: bold 17px var(--mono); color: var(--c); margin-left: 6px; }
+    #gThen { font-size: 11px; color: rgba(159,233,255,.7); margin-top: 3px; }
+    #guidance.soon { border-color: #ffb347; box-shadow: 0 0 16px rgba(255,179,71,.35) inset; }
+    #guidance.soon #gDist { color: #ffb347; }
 
     /* bottom: progress + profile */
     #progressBox { flex: 1; display: flex; flex-direction: column; justify-content: center; }
@@ -80,7 +100,7 @@
       font: bold 12px var(--mono); width: 22px; height: 22px; line-height: 18px; padding: 0; float: right; }
     .panel.collapsed .body, .panel.collapsed #progressBox > :not(h3) { display: none; }
     .panel.collapsed .tab:not(.active) { display: none; }
-    #right { max-height: calc(100% - 200px); display: flex; flex-direction: column; }
+    #right { max-height: calc(100% - 260px); display: flex; flex-direction: column; }
     #right .body { overflow: auto; }
     #tab-layers { width: 100%; }
     /* Esri layer list in HUD colors. It is built from Calcite web components whose
@@ -126,15 +146,30 @@
     <button id="toggle" class="btn" disabled>Loading…</button>
   </div>
 
+  <div id="guidance" class="panel" hidden>
+    <div id="gIcon">↑</div>
+    <div>
+      <div><span id="gText">Continue</span> <span id="gDist"></span></div>
+      <div id="gThen"></div>
+    </div>
+  </div>
+
   <div id="left" class="panel">
     <h3>// ROUTE CONTROL <button class="min" title="Minimize">–</button></h3>
     <div class="body">
     <div id="compass"><span class="n">N</span><div id="compassNeedle"></div></div>
+    <div id="gradeText">LEVEL</div>
     <button id="btnStart" class="btn">◎ SET START</button>
     <button id="btnEnd" class="btn">⌖ SET DESTINATION</button>
-    <button id="btnHazard" class="btn warn">⚠ ADD HAZARD</button>
+    <button id="btnHazard" class="btn warn">⚠ ADD / REMOVE HAZARD</button>
+    <div class="row radius"><span>HAZARD RADIUS</span>
+      <select id="hazardRadius">
+        <option value="0.5">0.5 km</option><option value="1">1 km</option><option value="2">2 km</option>
+        <option value="3">3 km</option><option value="5">5 km</option><option value="10">10 km</option>
+      </select></div>
     <button id="btnRoute" class="btn">⟲ COMPUTE ROUTE</button>
     <button id="btnSim" class="btn" disabled>▶ SIMULATE</button>
+    <button id="btnFollow" class="btn">◉ FOLLOW CAM</button>
     <button id="btnClear" class="btn">✕ CLEAR</button>
     <div id="navStatus">Ready</div>
     </div>
