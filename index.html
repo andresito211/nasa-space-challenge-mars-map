@@ -73,6 +73,18 @@
 
     const view = new MapView({ container: "view", map, zoom: 2, center: [77.5, 18.4] }); // Jezero area
 
+    // ---- NASA Mars Trek: MOLA global surface roughness ----
+    // Trek publishes this as WMTS in GCS_Mars_2000 (EPSG 104905) and the Esri layers use
+    // Mars 2000 sphere (104971). ArcGIS can't reproject tiles between them, but both are
+    // plain lon/lat grids, so we place Trek's 8 tiles (zoom level 1 = 4 x 2 tiles of 90°)
+    // as georeferenced images. It's a ~20 km/pixel product, meant for regional overview.
+    const trekLayer = await addTrekLayer(view, {
+      id: "mola_roughness",
+      title: "MOLA surface roughness (NASA Trek)",
+      opacity: 0.7,
+      visible: true
+    });
+
     view.ui.add(new Expand({ view, content: new LayerList({ view }), expanded: true }), "top-right");
     view.ui.add(new ScaleBar({ view, unit: "metric" }), "bottom-left");
 
@@ -82,6 +94,36 @@
       if (p) document.getElementById("coords").textContent =
         `lat ${p.y.toFixed(3)}°, lon ${p.x.toFixed(3)}°`;
     });
+  }
+
+  // Adds a NASA Mars Trek global (EQ) layer as a set of georeferenced images.
+  // Works for any Trek layer whose WMTS has a zoom level 1 with 4 x 2 tiles.
+  // Find other layer ids in Trek: open the layer, its id is the "l=" value in the URL.
+  async function addTrekLayer(view, { id, title, opacity = 1, visible = true, level = 1 }) {
+    const [MediaLayer, ImageElement, ExtentAndRotationGeoreference, Extent] = await loadModules([
+      "esri/layers/MediaLayer", "esri/layers/support/ImageElement",
+      "esri/layers/support/ExtentAndRotationGeoreference", "esri/geometry/Extent"
+    ]);
+    const sr = view.spatialReference;
+    const cols = 2 ** (level + 1), rows = 2 ** level, step = 180 / rows;   // level 1 → 4 x 2 tiles, 90° each
+    const elements = [];
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        elements.push(new ImageElement({
+          image: `https://trek.nasa.gov/tiles/Mars/EQ/${id}/1.0.0//default/default028mm/${level}/${r}/${c}.png`,
+          georeference: new ExtentAndRotationGeoreference({
+            extent: new Extent({
+              xmin: -180 + step * c, xmax: -180 + step * (c + 1),
+              ymax: 90 - step * r,   ymin: 90 - step * (r + 1),
+              spatialReference: sr
+            })
+          })
+        }));
+      }
+    }
+    const layer = new MediaLayer({ source: elements, title, opacity, visible, spatialReference: sr });
+    view.map.add(layer);
+    return layer;
   }
 
   /* ---- OPTION B: use the web map saved in ArcGIS Online ----
