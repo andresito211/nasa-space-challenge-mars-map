@@ -83,10 +83,30 @@
     #right { max-height: calc(100% - 200px); display: flex; flex-direction: column; }
     #right .body { overflow: auto; }
     #tab-layers { width: 100%; }
-    /* make the Esri layer list blend into the HUD */
-    #layerListHost .esri-layer-list, #layerListHost calcite-list, #layerListHost .esri-widget {
-      background: transparent !important; --calcite-color-foreground-1: transparent;
-      --calcite-color-text-1: #cfefff; --calcite-color-border-3: rgba(57,215,255,.2); font-family: var(--mono);
+    /* Esri layer list in HUD colors. It is built from Calcite web components whose
+       insides can't be styled directly, but they read these CSS variables. */
+    #layerListHost {
+      --calcite-color-background: transparent;
+      --calcite-color-foreground-1: transparent;               /* item background */
+      --calcite-color-foreground-2: rgba(57,215,255,.10);      /* hover */
+      --calcite-color-foreground-3: rgba(57,215,255,.18);      /* pressed */
+      --calcite-color-transparent-hover: rgba(57,215,255,.10);
+      --calcite-color-transparent-press: rgba(57,215,255,.18);
+      --calcite-color-text-1: #e8fbff;                         /* layer names */
+      --calcite-color-text-2: #9fe9ff;
+      --calcite-color-text-3: rgba(159,233,255,.6);            /* icons, secondary text */
+      --calcite-color-border-1: rgba(57,215,255,.25);
+      --calcite-color-border-2: rgba(57,215,255,.25);
+      --calcite-color-border-3: rgba(57,215,255,.15);          /* lines between items */
+      --calcite-color-brand: #39d7ff;
+      --calcite-color-brand-hover: #9fe9ff;
+      --calcite-font-family: var(--mono);
+      --calcite-font-size--1: 12px;
+      color: #e8fbff; font: 12px var(--mono); text-transform: uppercase; letter-spacing: .5px;
+    }
+    #layerListHost .esri-widget, #layerListHost .esri-layer-list,
+    #layerListHost calcite-list, #layerListHost calcite-list-item, #layerListHost calcite-flow-item {
+      background: transparent !important; background-color: transparent !important; color: inherit;
     }
 
     /* subtle scan-line overlay on the whole map */
@@ -139,7 +159,7 @@
         <div class="row"><span>HAZARDS</span><span id="hudHazards">0</span></div>
       </div>
       <div id="tab-layers" class="tabpane" hidden>
-        <div id="layerListHost"></div>
+        <div id="layerListHost" class="calcite-mode-dark"></div>
       </div>
     </div>
   </div>
