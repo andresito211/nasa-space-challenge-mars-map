@@ -24,10 +24,17 @@
   //      No ArcGIS login needed.
   // ---- OPTION B: load your saved web map instead (see bottom of file).
 
-  require([
-    "esri/Map", "esri/views/MapView", "esri/Basemap", "esri/layers/Layer",
-    "esri/widgets/LayerList", "esri/widgets/Expand", "esri/widgets/ScaleBar"
-  ], async (Map, MapView, Basemap, Layer, LayerList, Expand, ScaleBar) => {
+  // Load the modules first, then run main() outside the require callback
+  // (an async function used directly as the require callback can stall).
+  const loadModules = (names) => new Promise((ok, fail) => require(names, (...m) => ok(m), fail));
+
+  main().catch(err => console.error("Map failed to start:", err));
+
+  async function main() {
+    const [Map, MapView, Basemap, Layer, LayerList, Expand, ScaleBar] = await loadModules([
+      "esri/Map", "esri/views/MapView", "esri/Basemap", "esri/layers/Layer",
+      "esri/widgets/LayerList", "esri/widgets/Expand", "esri/widgets/ScaleBar"
+    ]);
 
     const base = "https://astro.arcgis.com/arcgis/rest/services/OnMars/";
     const services = [
@@ -35,16 +42,22 @@
       { url: base + "MColorDEM/MapServer", title: "HRSC-MOLA color relief", opacity: 0.5, visible: false },
       { url: base + "CTX1/MapServer",      title: "CTX mosaic (5 m/px)",    visible: false },
       { url: base + "HiRISE/MapServer",    title: "HiRISE (high-res)",      visible: false },
-      { url: "https://services.arcgis.com/P3ePLMYs2RVChkJx/arcgis/rest/services/Mars_Nomenclature_All/FeatureServer/0",
+      { url: "https://services.arcgis.com/P3ePLMYs2RVChkJx/arcgis/rest/services/Mars_Nomenclature_All/FeatureServer/7",
         title: "Nomenclature", opacity: 0.3 },
-      { url: "https://services.arcgis.com/P3ePLMYs2RVChkJx/arcgis/rest/services/Mars_Quadrangle_Grid/FeatureServer/0",
+      { url: "https://services.arcgis.com/P3ePLMYs2RVChkJx/arcgis/rest/services/Mars_Quadrangle_Grid/FeatureServer/11",
         title: "Quadrangle grid", opacity: 0.5, visible: false }
     ];
 
     const layers = [];
     for (const s of services) {
       // Detects the right layer type (tiled, dynamic, feature) from the service
-      const lyr = await Layer.fromArcGISServerUrl({ url: s.url });
+      let lyr;
+      try {
+        lyr = await Layer.fromArcGISServerUrl({ url: s.url });
+      } catch (err) {
+        console.error("Could not load layer:", s.title, err);  // skip it, keep the rest
+        continue;
+      }
       lyr.title = s.title;
       if (s.opacity !== undefined) lyr.opacity = s.opacity;
       if (s.visible !== undefined) lyr.visible = s.visible;
@@ -65,10 +78,11 @@
 
     view.on("pointer-move", (e) => {
       const p = view.toMap(e);
+      // Mars 2000 is a geographic system, so x/y are longitude/latitude in degrees
       if (p) document.getElementById("coords").textContent =
-        `${p.latitude?.toFixed(3) ?? p.y.toFixed(0)}, ${p.longitude?.toFixed(3) ?? p.x.toFixed(0)}`;
+        `lat ${p.y.toFixed(3)}°, lon ${p.x.toFixed(3)}°`;
     });
-  });
+  }
 
   /* ---- OPTION B: use the web map saved in ArcGIS Online ----
      1. In ArcGIS Online, share "Mars – Astronaut Map" with Everyone (public),
