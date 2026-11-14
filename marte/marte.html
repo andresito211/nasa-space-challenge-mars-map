@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Marte: mapa de supervivencia</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/cesium@1.120.0/Build/Cesium/Widgets/widgets.css">
+<script src="https://cdn.jsdelivr.net/npm/cesium@1.120.0/Build/Cesium/Cesium.js"></script>
+<style>
+  :root{--bg:#2b1710;--panel:#3a2016;--line:#6b3d2a;--sand:#f5e3cd;--mute:#c9a58a;--ice:#8fd3ff;--sun:#ffc857;--ok:#9bd37a;--bad:#ff7a5c}
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--sand);font:15px/1.5 system-ui,sans-serif}
+  #app{display:grid;grid-template-columns:1fr 360px;height:100%}
+  #map{position:relative;min-width:0}
+  #cesium{position:absolute;inset:0}
+  aside{background:var(--panel);border-left:1px solid var(--line);overflow-y:auto;padding:18px}
+  h1{font:700 24px/1.2 Georgia,serif;margin:0 0 4px}
+  h2{font:700 18px/1.3 Georgia,serif;margin:20px 0 8px}
+  p{margin:0 0 10px;color:var(--mute)}
+  .layers label{display:flex;align-items:center;gap:8px;padding:4px 0;cursor:pointer}
+  .sw{width:12px;height:12px;border-radius:50%;display:inline-block}
+  .bar{display:grid;grid-template-columns:110px 1fr;align-items:center;gap:8px;margin:4px 0;font-size:13px}
+  .track{height:8px;background:var(--bg);border-radius:4px;overflow:hidden}
+  .fill{height:100%;background:var(--sun)}
+  button{font:inherit;background:var(--sun);color:#2b1710;border:0;border-radius:6px;padding:8px 14px;font-weight:600;cursor:pointer}
+  button:disabled{opacity:.5;cursor:default}
+  button:focus-visible,input:focus-visible{outline:3px solid var(--ice);outline-offset:2px}
+  #log{max-height:180px;overflow-y:auto;font-size:13px;color:var(--mute);margin-top:8px;padding-left:18px}
+  .res{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}
+  .res div{background:var(--bg);border-radius:6px;padding:6px 10px;font-size:13px}
+  .res b{display:block;font-size:18px;color:var(--sand)}
+  .low b{color:var(--bad)}
+  @media (max-width:800px){#app{grid-template-columns:1fr;grid-template-rows:55% 45%}aside{border-left:0;border-top:1px solid var(--line)}}
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="map"><div id="cesium"></div></div>
+  <aside>
+    <h1>Sobrevivir en Marte</h1>
+    <p>Gira el planeta, toca un lugar y descubre qué ofrece para una misión humana.</p>
+
+    <h2>Capas</h2>
+    <div class="layers" id="layers"></div>
+
+    <h2 id="siteName">Elige un lugar</h2>
+    <div id="siteInfo"><p>Toca un marcador del mapa para ver sus datos de supervivencia.</p></div>
+
+    <h2>Misión de 30 días</h2>
+    <p>Simula cómo se gestionan agua, oxígeno, energía y comida en el lugar elegido.</p>
+    <button id="start" disabled>Iniciar misión</button>
+    <div class="res" id="res"></div>
+    <ol id="log"></ol>
+  </aside>
+</div>
+
+<script>
+/* ---------- 1. Marte como elipsoide ---------- */
+// Radios de Marte en metros (ecuatorial y polar). Hay que fijarlos ANTES de crear el visor.
+const MARS = new Cesium.Ellipsoid(3396190, 3396190, 3376200);
+Cesium.Ellipsoid.default = MARS;
+
+/* ---------- 2. Visor con mapa base de NASA Mars Trek ---------- */
+const viewer = new Cesium.Viewer("cesium", {
+  baseLayer: false,            // sin mapa terrestre
+  baseLayerPicker: false,
+  geocoder: false,             // el buscador usa servicios de la Tierra
+  homeButton: false,
+  sceneModePicker: false,
+  navigationHelpButton: false,
+  animation: false,
+  timeline: false,
+  fullscreenButton: false,
+  infoBox: false,
+  selectionIndicator: false
+});
+viewer.scene.globe.baseColor = Cesium.Color.fromCssColorString("#a4573a"); // color de respaldo
+viewer.scene.skyAtmosphere.show = false;
+viewer.scene.globe.showGroundAtmosphere = false;
+viewer.scene.moon.show = false;
+viewer.scene.backgroundColor = Cesium.Color.fromCssColorString("#140a06");
+
+// ---- TEXTURA DEL PLANETA ----
+// "trek"  = teselas de NASA Mars Trek (necesita internet).
+// "local" = una imagen mars.jpg guardada en la misma carpeta que este archivo.
+const TEXTURA = "trek";
+
+if (TEXTURA === "trek") {
+  // Formato Trek: .../{capa}/1.0.0/default/default028mm/{z}/{fila}/{columna}.jpg
+  // La fila 0 es la del norte, así que en Cesium se usa {y} (no {reverseY}).
+  const trek = new Cesium.UrlTemplateImageryProvider({
+    url: "https://trek.nasa.gov/tiles/Mars/EQ/Viking_MDIM21_ClrMosaic_global_232m/1.0.0/default/default028mm/{z}/{y}/{x}.jpg",
+    tilingScheme: new Cesium.GeographicTilingScheme({ ellipsoid: MARS }),
+    ellipsoid: MARS,
+    maximumLevel: 7,   // prueba 8 si quieres más detalle
+    credit: "NASA/JPL Mars Trek, USGS/NASA Ames"
+  });
+  trek.errorEvent.addEventListener(e => console.warn("No cargó una tesela:", e.message));
+  viewer.imageryLayers.addImageryProvider(trek);
+} else {
+  // Imagen completa en proyección equirectangular (de -180 a 180 de longitud).
+  Cesium.SingleTileImageryProvider.fromUrl("mars.jpg", {
+    rectangle: Cesium.Rectangle.MAX_VALUE,
+    credit: "NASA/JPL/USGS"
+  }).then(p => viewer.imageryLayers.addImageryProvider(p))
+    .catch(err => console.error("No se encontró mars.jpg:", err));
+}
+
+viewer.camera.setView({ destination: Cesium.Cartesian3.fromDegrees(60, 10, 14000000) });
+
+/* ---------- 3. Datos de los lugares ---------- */
+// Puntuaciones de 0 a 5: agua, protección contra radiación, energía solar, seguridad del terreno
+const SITES = [
+  { id:"jezero", name:"Cráter Jezero", lat:18.44, lon:77.45, type:"aterrizaje",
+    water:3, shield:2, solar:4, terrain:3,
+    text:"Antiguo delta de un río. Perseverance busca aquí señales de vida pasada y prueba MOXIE, que produce oxígeno a partir del CO₂." },
+  { id:"gale", name:"Cráter Gale", lat:-5.4, lon:137.8, type:"aterrizaje",
+    water:3, shield:3, solar:5, terrain:4,
+    text:"Curiosity encontró minerales arcillosos que se formaron con agua. Cerca del ecuador: mucho sol y temperaturas más suaves." },
+  { id:"utopia", name:"Utopia Planitia", lat:47.97, lon:134.26, type:"hielo",
+    water:5, shield:1, solar:2, terrain:5,
+    text:"Llanura plana con hielo de agua a pocos centímetros bajo el suelo (radar SHARAD). Es excelente para obtener agua, pero hace mucho frío." },
+  { id:"arcadia", name:"Arcadia Planitia", lat:47, lon:-170, type:"hielo",
+    water:5, shield:1, solar:2, terrain:5,
+    text:"Una de las zonas candidatas para misiones humanas por su hielo somero y su terreno liso." },
+  { id:"hellas", name:"Cuenca Hellas", lat:-42.4, lon:70.5, type:"altitud",
+    water:2, shield:3, solar:3, terrain:3,
+    text:"El punto más bajo de Marte (unos 7 km bajo el nivel de referencia). Más presión atmosférica y algo más de protección, pero tormentas de polvo." },
+  { id:"valles", name:"Valles Marineris", lat:-13.9, lon:-59.2, type:"altitud",
+    water:2, shield:4, solar:4, terrain:2,
+    text:"Cañón de más de 4000 km. Las paredes dan protección y hay posibles depósitos de agua, pero el terreno es difícil." },
+  { id:"olympus", name:"Olympus Mons", lat:18.65, lon:-133.8, type:"altitud",
+    water:1, shield:1, solar:4, terrain:2,
+    text:"El volcán más alto del sistema solar (unos 22 km). La atmósfera es muy delgada: poca protección y presión casi nula." },
+  { id:"arsia", name:"Arsia Mons (tubos de lava)", lat:-8.3, lon:-120.1, type:"tubo",
+    water:1, shield:5, solar:4, terrain:2,
+    text:"Tiene entradas a cuevas de lava. Bajo tierra, la roca bloquea gran parte de la radiación y las temperaturas son estables." },
+  { id:"marius", name:"Colinas Marius", lat:14.0, lon:-56.7, type:"tubo",
+    water:1, shield:5, solar:4, terrain:3,
+    text:"Campo volcánico con pozos que indican tubos de lava, refugios naturales para un hábitat." },
+  { id:"north", name:"Casquete polar norte", lat:84, lon:0, type:"polo",
+    water:5, shield:1, solar:1, terrain:2,
+    text:"Enorme reserva de hielo de agua, pero con meses de oscuridad y temperaturas cercanas a -125 °C en invierno." },
+  { id:"south", name:"Casquete polar sur", lat:-85, lon:0, type:"polo",
+    water:5, shield:1, solar:1, terrain:2,
+    text:"Hielo de agua y de CO₂. Mucho recurso, pero muy poca luz solar durante parte del año." }
+];
+
+const COLORS = { aterrizaje:"#ffc857", hielo:"#8fd3ff", altitud:"#f08a5d", tubo:"#c792ea", polo:"#ffffff" };
+
+/* ---------- 4. Capas ---------- */
+const layers = {
+  sites:  { label:"Lugares de interés", color:"#ffc857", ents:[] },
+  ice:    { label:"Hielo de agua accesible", color:"#8fd3ff", ents:[] },
+  solar:  { label:"Mejor luz solar (ecuador)", color:"#ffc857", ents:[] },
+  tubes:  { label:"Tubos de lava (refugios)", color:"#c792ea", ents:[] }
+};
+
+SITES.forEach(s => {
+  const e = viewer.entities.add({
+    id: s.id,
+    position: Cesium.Cartesian3.fromDegrees(s.lon, s.lat),
+    point: { pixelSize: 12, color: Cesium.Color.fromCssColorString(COLORS[s.type]),
+             outlineColor: Cesium.Color.BLACK, outlineWidth: 2,
+             disableDepthTestDistance: Number.POSITIVE_INFINITY },
+    label: { text: s.name, font: "13px system-ui", pixelOffset: new Cesium.Cartesian2(0, -22),
+             fillColor: Cesium.Color.WHITE, outlineColor: Cesium.Color.BLACK, outlineWidth: 3,
+             style: Cesium.LabelStyle.FILL_AND_OUTLINE, distanceDisplayCondition: new Cesium.DistanceDisplayCondition(0, 2.5e7),
+             disableDepthTestDistance: Number.POSITIVE_INFINITY }
+  });
+  layers.sites.ents.push(e);
+  if (s.type === "tubo") layers.tubes.ents.push(viewer.entities.add({
+    position: Cesium.Cartesian3.fromDegrees(s.lon, s.lat),
+    ellipse: { semiMajorAxis: 250000, semiMinorAxis: 250000,
+               material: Cesium.Color.fromCssColorString("#c792ea").withAlpha(.35), height: 0 } }));
+});
+
+// Bandas de hielo somero en latitudes medias y altas (aproximación didáctica)
+[[40, 60], [-60, -40]].forEach(([s, n]) => layers.ice.ents.push(viewer.entities.add({
+  rectangle: { coordinates: Cesium.Rectangle.fromDegrees(-180, s, 180, n),
+               material: Cesium.Color.fromCssColorString("#8fd3ff").withAlpha(.3) } })));
+[[75, 90], [-90, -75]].forEach(([s, n]) => layers.ice.ents.push(viewer.entities.add({
+  rectangle: { coordinates: Cesium.Rectangle.fromDegrees(-180, s, 180, n),
+               material: Cesium.Color.fromCssColorString("#ffffff").withAlpha(.45) } })));
+
+// Banda ecuatorial: más energía solar
+layers.solar.ents.push(viewer.entities.add({
+  rectangle: { coordinates: Cesium.Rectangle.fromDegrees(-180, -25, 180, 25),
+               material: Cesium.Color.fromCssColorString("#ffc857").withAlpha(.22) } }));
+
+// Capas apagadas al inicio, salvo los lugares
+["ice", "solar", "tubes"].forEach(k => layers[k].ents.forEach(e => e.show = false));
+
+const layersBox = document.getElementById("layers");
+Object.entries(layers).forEach(([k, L]) => {
+  const lab = document.createElement("label");
+  lab.innerHTML = `<input type="checkbox" ${k === "sites" ? "checked" : ""}><span class="sw" style="background:${L.color}"></span>${L.label}`;
+  lab.querySelector("input").addEventListener("change", ev => L.ents.forEach(e => e.show = ev.target.checked));
+  layersBox.appendChild(lab);
+});
+
+/* ---------- 5. Clic en un lugar: ficha de supervivencia ---------- */
+let current = null;
+const handler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
+handler.setInputAction(click => {
+  const picked = viewer.scene.pick(click.position);
+  if (Cesium.defined(picked) && picked.id && picked.id.id) {
+    const s = SITES.find(x => x.id === picked.id.id);
+    if (s) showSite(s);
+  }
+}, Cesium.ScreenSpaceEventType.LEFT_CLICK);
+
+function bar(label, v) {
+  return `<div class="bar"><span>${label}</span><div class="track"><div class="fill" style="width:${v * 20}%"></div></div></div>`;
+}
+
+function showSite(s) {
+  current = s;
+  document.getElementById("siteName").textContent = s.name;
+  document.getElementById("siteInfo").innerHTML =
+    `<p>${s.text}</p>` +
+    bar("Agua", s.water) + bar("Protección", s.shield) +
+    bar("Energía solar", s.solar) + bar("Terreno seguro", s.terrain);
+  document.getElementById("start").disabled = false;
+  viewer.camera.flyTo({ destination: Cesium.Cartesian3.fromDegrees(s.lon, s.lat, 2500000), duration: 2 });
+}
+
+/* ---------- 6. Misión de 30 días ---------- */
+const startBtn = document.getElementById("start");
+const resBox = document.getElementById("res");
+const logEl = document.getElementById("log");
+
+function drawRes(r) {
+  const names = { water:"Agua", oxygen:"Oxígeno", power:"Energía", food:"Comida" };
+  resBox.innerHTML = Object.keys(names).map(k =>
+    `<div class="${r[k] < 25 ? "low" : ""}">${names[k]}<b>${Math.max(0, Math.round(r[k]))}%</b></div>`).join("");
+}
+
+function addLog(t) { const li = document.createElement("li"); li.textContent = t; logEl.prepend(li); }
+
+startBtn.addEventListener("click", () => {
+  if (!current) return;
+  const s = current;
+  const r = { water: 100, oxygen: 100, power: 100, food: 100 };
+  let day = 0, storm = 0;
+  logEl.innerHTML = "";
+  startBtn.disabled = true;
+  drawRes(r);
+  addLog(`Aterrizaje en ${s.name}. Comienza la misión.`);
+
+  const timer = setInterval(() => {
+    day++;
+    // Producción según el lugar (0-5) menos consumo diario de la tripulación
+    r.water  += s.water * 1.2 - 4;           // extracción de hielo y reciclaje
+    r.oxygen += s.water * 0.5 + 2.5 - 4.2;   // MOXIE necesita energía y CO₂
+    r.power  += s.solar * 1.4 - 5 - (storm > 0 ? 3 : 0);
+    r.food   += 1.6 - 2.6 + s.terrain * .25; // invernadero
+    if (s.shield < 3) { r.power -= 1; if (day % 10 === 0) addLog("Radiación alta: la tripulación pasa más tiempo en el refugio y trabaja menos."); }
+    if (storm > 0) storm--;
+    else if (Math.random() < 0.08) { storm = 3; addLog(`Día ${day}: tormenta de polvo. Los paneles solares producen menos.`); }
+    Object.keys(r).forEach(k => r[k] = Math.min(100, r[k]));
+    drawRes(r);
+
+    const dead = Object.keys(r).find(k => r[k] <= 0);
+    if (dead) {
+      clearInterval(timer); startBtn.disabled = false;
+      addLog(`Día ${day}: se agotó ${{water:"el agua",oxygen:"el oxígeno",power:"la energía",food:"la comida"}[dead]}. La misión fracasa.`);
+    } else if (day >= 30) {
+      clearInterval(timer); startBtn.disabled = false;
+      addLog("Día 30: la tripulación sobrevivió. Prueba otro lugar y compara.");
+    }
+  }, 500);
+});
+</script>
+</body>
+</html>
