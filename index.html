@@ -13,21 +13,36 @@
       background: rgba(10,10,10,.75); color: #ffb37a; font: 13px monospace;
       border: 1px solid #ff7a2f; border-radius: 6px;
     }
+    #toggle {
+      margin-left: 12px; padding: 3px 10px; cursor: pointer;
+      background: #ff7a2f; color: #111; border: 0; border-radius: 4px; font: bold 12px monospace;
+    }
   </style>
 </head>
 <body>
   <div id="view"></div>
-  <div id="hud">MARS · cursor: <span id="coords">--</span></div>
+  <div id="hud">MARS · <span id="coords">--</span>
+    <button id="toggle" disabled>Loading…</button></div>
 
   <script>
   // ---- OPTION A (default): load the public Esri/USGS Mars services directly.
   //      No ArcGIS login needed.
   // ---- OPTION B: load your saved web map instead (see bottom of file).
 
-  require([
-    "esri/Map", "esri/views/MapView", "esri/Basemap", "esri/layers/Layer",
-    "esri/widgets/LayerList", "esri/widgets/Expand", "esri/widgets/ScaleBar"
-  ], async (Map, MapView, Basemap, Layer, LayerList, Expand, ScaleBar) => {
+  // Load the modules first, then run main() outside the require callback
+  // (an async function used directly as the require callback can stall).
+  const loadModules = (names) => new Promise((ok, fail) => require(names, (...m) => ok(m), fail));
+
+  const MARS_SR = { wkid: 104971 };   // Mars 2000 (sphere), used by the Esri Mars services
+  let currentView = null;
+
+  main().catch(err => console.error("Map failed to start:", err));
+
+
+  async function main() {
+    const [Map, Basemap, Layer, ElevationLayer] = await loadModules([
+      "esri/Map", "esri/Basemap", "esri/layers/Layer", "esri/layers/ElevationLayer"
+    ]);
 
     const base = "https://astro.arcgis.com/arcgis/rest/services/OnMars/";
     const services = [
@@ -35,16 +50,22 @@
       { url: base + "MColorDEM/MapServer", title: "HRSC-MOLA color relief", opacity: 0.5, visible: false },
       { url: base + "CTX1/MapServer",      title: "CTX mosaic (5 m/px)",    visible: false },
       { url: base + "HiRISE/MapServer",    title: "HiRISE (high-res)",      visible: false },
-      { url: "https://services.arcgis.com/P3ePLMYs2RVChkJx/arcgis/rest/services/Mars_Nomenclature_All/FeatureServer/0",
-        title: "Nomenclature", opacity: 0.3 },
-      { url: "https://services.arcgis.com/P3ePLMYs2RVChkJx/arcgis/rest/services/Mars_Quadrangle_Grid/FeatureServer/0",
+      { url: "https://services.arcgis.com/P3ePLMYs2RVChkJx/arcgis/rest/services/Mars_Nomenclature_All/FeatureServer/7",
+        title: "Nomenclature areas (outlines)", opacity: 0.3, visible: false },
+      { url: "https://services.arcgis.com/P3ePLMYs2RVChkJx/arcgis/rest/services/Mars_Quadrangle_Grid/FeatureServer/11",
         title: "Quadrangle grid", opacity: 0.5, visible: false }
     ];
 
     const layers = [];
     for (const s of services) {
       // Detects the right layer type (tiled, dynamic, feature) from the service
-      const lyr = await Layer.fromArcGISServerUrl({ url: s.url });
+      let lyr;
+      try {
+        lyr = await Layer.fromArcGISServerUrl({ url: s.url });
+      } catch (err) {
+        console.error("Could not load layer:", s.title, err);  // skip it, keep the rest
+        continue;
+      }
       lyr.title = s.title;
       if (s.opacity !== undefined) lyr.opacity = s.opacity;
       if (s.visible !== undefined) lyr.visible = s.visible;
@@ -53,22 +74,295 @@
 
     const basemapLayer = layers.find(l => l.s.basemap).lyr;
     const map = new Map({
-      // The basemap's spatial reference (Mars 2000) defines the map's coordinate system
       basemap: new Basemap({ baseLayers: [basemapLayer], title: "Mars" }),
-      layers: layers.filter(l => !l.s.basemap).map(l => l.lyr)
+      layers: layers.filter(l => !l.s.basemap).map(l => l.lyr),
+      // Real Mars elevation (HRSC + MOLA, 200 m). Used only by the 3D globe; 2D ignores it.
+      ground: { layers: [new ElevationLayer({
+        url: base + "MDEM200M/ImageServer", title: "Mars elevation"
+      })] }
     });
 
-    const view = new MapView({ container: "view", map, zoom: 2, center: [77.5, 18.4] }); // Jezero area
+    // NASA Mars Trek: MOLA global surface roughness (see addTrekLayer below)
+    await addTrekLayer(map, {
+      id: "mola_roughness",
+      title: "MOLA surface roughness (NASA Trek)",
+      opacity: 0.7,
+      visible: true
+    });
 
-    view.ui.add(new Expand({ view, content: new LayerList({ view }), expanded: true }), "top-right");
-    view.ui.add(new ScaleBar({ view, unit: "metric" }), "bottom-left");
+    // Georeferenced data: feature names, landing sites and your own mission points
+    await addGeoData(map);
+
+    // Start in 3D; the button in the HUD switches between globe and flat map.
+    // The button is wired up first and never waits for a view to finish loading,
+    // so it stays usable even if a layer is slow or fails.
+    const btn = document.getElementById("toggle");
+    let mode = "3d";
+    const label = () => { btn.textContent = mode === "3d" ? "Switch to 2D" : "Switch to 3D globe"; };
+    btn.onclick = async () => {
+      mode = mode === "3d" ? "2d" : "3d";
+      label();
+      try {
+        await showView(map, mode);
+      } catch (err) {
+        console.error("Could not switch view:", err);
+      }
+    };
+    label();
+    btn.disabled = false;
+    await showView(map, mode);
+  }
+
+  // Creates a 2D MapView or a 3D SceneView over the same map, keeping the place you were looking at.
+  async function showView(map, mode) {
+    const [MapView, SceneView, LayerList, Expand, ScaleBar] = await loadModules([
+      "esri/views/MapView", "esri/views/SceneView",
+      "esri/widgets/LayerList", "esri/widgets/Expand", "esri/widgets/ScaleBar"
+    ]);
+
+    // Remember where we were (default: Jezero Crater area)
+    let center = [77.5, 18.4], scale = 20000000;
+    if (currentView) {
+      if (currentView.center) center = [currentView.center.x, currentView.center.y];
+      scale = currentView.scale || scale;
+      // Detach the map first: view.destroy() would otherwise destroy the map and all its layers too
+      currentView.map = null;
+      currentView.container = null;
+      currentView.destroy();
+    }
+
+    // Give the center as a Mars point (a plain [lon, lat] array would be read as Earth WGS84)
+    const common = {
+      container: "view", map, spatialReference: MARS_SR, scale,
+      center: { type: "point", x: center[0], y: center[1], spatialReference: MARS_SR }
+    };
+    const view = mode === "3d"
+      ? new SceneView({
+          ...common,
+          qualityProfile: "high",
+          environment: { lighting: { type: "virtual" } }   // even light; Mars sun position isn't modeled
+        })
+      : new MapView(common);
+
+    view.ui.add(new Expand({ view, content: new LayerList({ view }), expanded: false }), "top-right");
+    if (mode === "2d") view.ui.add(new ScaleBar({ view, unit: "metric" }), "bottom-left");
 
     view.on("pointer-move", (e) => {
-      const p = view.toMap(e);
-      if (p) document.getElementById("coords").textContent =
-        `${p.latitude?.toFixed(3) ?? p.y.toFixed(0)}, ${p.longitude?.toFixed(3) ?? p.x.toFixed(0)}`;
+      const p = view.toMap(e);   // null when the pointer is off the globe
+      // Mars 2000 is a geographic system, so x/y are longitude/latitude in degrees
+      document.getElementById("coords").textContent = p
+        ? `lat ${p.y.toFixed(3)}°, lon ${p.x.toFixed(3)}°` + (mode === "3d" && p.z != null ? `, elev ${Math.round(p.z)} m` : "")
+        : "--";
     });
-  });
+
+    applySymbols(mode);
+    currentView = view;
+    view.when(
+      () => console.log(`Mars ${mode.toUpperCase()} view ready`),
+      (err) => console.error(`Mars ${mode.toUpperCase()} view failed:`, err)
+    );
+    return view;
+  }
+
+
+  // =====================================================================
+  //  GEOREFERENCED DATA (names, landing sites, your own points)
+  //  All coordinates are Mars lon/lat in degrees (Mars 2000 sphere, wkid 104971).
+  // =====================================================================
+  const geo = {};   // the data layers, so symbols can be swapped for 2D / 3D
+
+  async function addGeoData(map) {
+    const [FeatureLayer, Graphic, esriRequest] = await loadModules([
+      "esri/layers/FeatureLayer", "esri/Graphic", "esri/request"
+    ]);
+
+    // ---- 1. IAU feature names (craters, valleys, plains…) as label points ----
+    // The USGS service stores them as polygons; we read each feature's center so the
+    // names sit on the surface like in Esri's Explore Mars app.
+    try {
+      const url = "https://services.arcgis.com/P3ePLMYs2RVChkJx/arcgis/rest/services/Mars_Nomenclature_All/FeatureServer/7/query";
+      const { data } = await esriRequest(url, { query: {
+        where: "1=1", returnGeometry: false, f: "json", resultRecordCount: 4000,
+        outFields: "OBJECTID,clean_name,type,diameter,center_lon,center_lat,origin,link"
+      }});
+      const graphics = data.features.map(f => {
+        const a = f.attributes;
+        const lon = a.center_lon > 180 ? a.center_lon - 360 : a.center_lon;
+        return new Graphic({
+          geometry: { type: "point", x: lon, y: a.center_lat, spatialReference: MARS_SR },
+          attributes: { ...a, center_lon: lon }
+        });
+      });
+      geo.names = new FeatureLayer({
+        title: "Feature names (IAU)",
+        source: graphics,
+        objectIdField: "OBJECTID",
+        spatialReference: MARS_SR,
+        geometryType: "point",
+        fields: [
+          { name: "OBJECTID", type: "oid" },
+          { name: "clean_name", type: "string", alias: "Name" },
+          { name: "type", type: "string", alias: "Type" },
+          { name: "diameter", type: "double", alias: "Diameter (km)" },
+          { name: "center_lon", type: "double" },
+          { name: "center_lat", type: "double" },
+          { name: "origin", type: "string", alias: "Origin of name" },
+          { name: "link", type: "string" }
+        ],
+        outFields: ["*"],
+        popupTemplate: {
+          title: "{clean_name}",
+          content: "<b>{type}</b><br>Diameter: {diameter} km<br>Lat {center_lat}°, Lon {center_lon}°<br>{origin}<br><a href='{link}' target='_blank'>USGS Gazetteer</a>"
+        }
+      });
+      map.add(geo.names);
+    } catch (err) {
+      console.error("Could not load feature names:", err);
+    }
+
+    // ---- 2. Landers and rovers (Esri "Mars artificial objects", same data as Explore Mars) ----
+    geo.landers = new FeatureLayer({
+      url: "https://services2.arcgis.com/cFEFS0EWrhfDeVw9/arcgis/rest/services/mars_artificial_objects/FeatureServer/0",
+      title: "Landers & rovers",
+      outFields: ["*"],
+      popupTemplate: {
+        title: "{name} ({landed})",
+        content: "Nationality: {nationality}<br>Mass: {mass} kg<br>Status: {operational}<br><a href='{URL}' target='_blank'>More info</a>"
+      }
+    });
+    map.add(geo.landers);
+
+    // ---- 3. Your own mission data: mission.geojson next to index.html ----
+    // GeoJSON normally means Earth coordinates, so we read the file ourselves and
+    // place the points on Mars. Edit mission.geojson to add bases, waypoints, hazards…
+    try {
+      const res = await fetch("mission.geojson");
+      if (res.ok) {
+        const gj = await res.json();
+        const pts = gj.features.filter(f => f.geometry && f.geometry.type === "Point");
+        geo.mission = new FeatureLayer({
+          title: gj.name || "Mission points",
+          source: pts.map((f, i) => new Graphic({
+            geometry: { type: "point", x: f.geometry.coordinates[0], y: f.geometry.coordinates[1], spatialReference: MARS_SR },
+            attributes: { OBJECTID: i + 1, name: f.properties.name || `Point ${i + 1}`,
+                          kind: f.properties.kind || "waypoint", notes: f.properties.notes || "" }
+          })),
+          objectIdField: "OBJECTID",
+          spatialReference: MARS_SR,
+          geometryType: "point",
+          fields: [
+            { name: "OBJECTID", type: "oid" },
+            { name: "name", type: "string" },
+            { name: "kind", type: "string" },
+            { name: "notes", type: "string" }
+          ],
+          outFields: ["*"],
+          popupTemplate: { title: "{name}", content: "Type: {kind}<br>{notes}" }
+        });
+        map.add(geo.mission);
+      }
+    } catch (err) {
+      console.warn("No mission.geojson loaded:", err);
+    }
+  }
+
+  // Labels: big features show from far away, small craters only when you zoom in.
+  function nameLabels(mode) {
+    const text = { type: "text", color: "#f3e6d8", haloColor: "rgba(0,0,0,0.6)", haloSize: 1,
+                   font: { family: "Arial", style: "italic", size: 11 } };
+    const sym = mode === "3d"
+      ? { type: "label-3d", symbolLayers: [{ type: "text", material: { color: text.color },
+          halo: { color: text.haloColor, size: 1 }, font: text.font, size: 11 }] }
+      : text;
+    const cls = (where, minScale) => ({
+      labelExpressionInfo: { expression: "$feature.clean_name" },
+      labelPlacement: mode === "3d" ? "above-center" : "center-center",
+      where, minScale, maxScale: 0, symbol: sym
+    });
+    return [
+      cls("diameter >= 1000", 0),
+      cls("diameter >= 300 AND diameter < 1000", 60000000),
+      cls("diameter >= 100 AND diameter < 300", 15000000),
+      cls("diameter >= 20 AND diameter < 100", 4000000),
+      cls("diameter < 20", 1000000)
+    ];
+  }
+
+  // Points that float above the surface with a leader line in 3D (like Explore Mars), flat dots in 2D.
+  function calloutRenderer(mode, color, size) {
+    if (mode === "2d") {
+      return { type: "simple", symbol: { type: "simple-marker", size, color, outline: { color: "black", width: 0.5 } } };
+    }
+    return { type: "simple", symbol: {
+      type: "point-3d",
+      symbolLayers: [{ type: "icon", resource: { primitive: "circle" }, material: { color }, size,
+                       outline: { color: "black", size: 0.5 } }],
+      verticalOffset: { screenLength: 40, maxWorldLength: 300000, minWorldLength: 5000 },
+      callout: { type: "line", size: 1, color }
+    }};
+  }
+
+  function pointLabels(mode, expression, color, size = 12) {
+    const sym = mode === "3d"
+      ? { type: "label-3d", symbolLayers: [{ type: "text", material: { color },
+          halo: { color: "rgba(0,0,0,0.7)", size: 1 }, font: { weight: "bold" }, size }] }
+      : { type: "text", color, haloColor: "black", haloSize: 1, font: { weight: "bold", size } };
+    return [{ labelExpressionInfo: { expression }, labelPlacement: mode === "3d" ? "above-center" : "above-right", symbol: sym }];
+  }
+
+  function applySymbols(mode) {
+    const ground = { mode: "on-the-ground" };
+    if (geo.names) {
+      geo.names.elevationInfo = mode === "3d" ? { mode: "relative-to-ground" } : ground;
+      geo.names.renderer = { type: "simple", symbol: mode === "3d"
+        ? { type: "point-3d", symbolLayers: [{ type: "icon", resource: { primitive: "circle" }, material: { color: [0, 0, 0, 0] }, size: 1 }] }
+        : { type: "simple-marker", size: 1, color: [0, 0, 0, 0], outline: null } };
+      geo.names.labelingInfo = nameLabels(mode);
+    }
+    if (geo.landers) {
+      geo.landers.elevationInfo = mode === "3d" ? { mode: "relative-to-ground" } : ground;
+      geo.landers.renderer = calloutRenderer(mode, "white", 6);
+      geo.landers.labelingInfo = pointLabels(mode, "$feature.name + ' (' + $feature.landed + ')'", "white");
+    }
+    if (geo.mission) {
+      geo.mission.elevationInfo = mode === "3d" ? { mode: "relative-to-ground" } : ground;
+      geo.mission.renderer = calloutRenderer(mode, "#ff9a3c", 9);
+      geo.mission.labelingInfo = pointLabels(mode, "$feature.name", "#ffb37a", 13);
+    }
+  }
+
+  // Adds a NASA Mars Trek global (EQ) layer as a set of georeferenced images.
+  // Trek uses GCS_Mars_2000 (104905) and the Esri layers Mars 2000 sphere (104971); ArcGIS
+  // can't reproject tiles between them, but both are lon/lat grids, so the tiles are placed
+  // as georeferenced images. mola_roughness is ~20 km/pixel: a regional overview.
+  // Works for any Trek layer whose WMTS has a zoom level 1 with 4 x 2 tiles.
+  // Find other layer ids in Trek: open the layer, its id is the "l=" value in the URL.
+  async function addTrekLayer(map, { id, title, opacity = 1, visible = true, level = 1 }) {
+    const [MediaLayer, ImageElement, ExtentAndRotationGeoreference, Extent] = await loadModules([
+      "esri/layers/MediaLayer", "esri/layers/support/ImageElement",
+      "esri/layers/support/ExtentAndRotationGeoreference", "esri/geometry/Extent"
+    ]);
+    const sr = MARS_SR;
+    const cols = 2 ** (level + 1), rows = 2 ** level, step = 180 / rows;   // level 1 → 4 x 2 tiles, 90° each
+    const elements = [];
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        elements.push(new ImageElement({
+          image: `https://trek.nasa.gov/tiles/Mars/EQ/${id}/1.0.0//default/default028mm/${level}/${r}/${c}.png`,
+          georeference: new ExtentAndRotationGeoreference({
+            extent: new Extent({
+              xmin: -180 + step * c, xmax: -180 + step * (c + 1),
+              ymax: 90 - step * r,   ymin: 90 - step * (r + 1),
+              spatialReference: sr
+            })
+          })
+        }));
+      }
+    }
+    const layer = new MediaLayer({ source: elements, title, opacity, visible, spatialReference: sr });
+    map.add(layer);
+    return layer;
+  }
 
   /* ---- OPTION B: use the web map saved in ArcGIS Online ----
      1. In ArcGIS Online, share "Mars – Astronaut Map" with Everyone (public),
