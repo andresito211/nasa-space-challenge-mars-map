@@ -90,18 +90,24 @@
       visible: true
     });
 
-    // Start in 3D; the button in the HUD switches between globe and flat map
+    // Start in 3D; the button in the HUD switches between globe and flat map.
+    // The button is wired up first and never waits for a view to finish loading,
+    // so it stays usable even if a layer is slow or fails.
     const btn = document.getElementById("toggle");
     let mode = "3d";
-    await showView(map, mode);
-    btn.textContent = "Switch to 2D";
+    const label = () => { btn.textContent = mode === "3d" ? "Switch to 2D" : "Switch to 3D globe"; };
     btn.onclick = async () => {
       mode = mode === "3d" ? "2d" : "3d";
-      btn.disabled = true;
-      await showView(map, mode);
-      btn.textContent = mode === "3d" ? "Switch to 2D" : "Switch to 3D globe";
-      btn.disabled = false;
+      label();
+      try {
+        await showView(map, mode);
+      } catch (err) {
+        console.error("Could not switch view:", err);
+      }
     };
+    label();
+    btn.disabled = false;
+    await showView(map, mode);
   }
 
   // Creates a 2D MapView or a 3D SceneView over the same map, keeping the place you were looking at.
@@ -116,6 +122,8 @@
     if (currentView) {
       if (currentView.center) center = [currentView.center.x, currentView.center.y];
       scale = currentView.scale || scale;
+      // Detach the map first: view.destroy() would otherwise destroy the map and all its layers too
+      currentView.map = null;
       currentView.container = null;
       currentView.destroy();
     }
@@ -145,7 +153,10 @@
     });
 
     currentView = view;
-    await view.when();
+    view.when(
+      () => console.log(`Mars ${mode.toUpperCase()} view ready`),
+      (err) => console.error(`Mars ${mode.toUpperCase()} view failed:`, err)
+    );
     return view;
   }
 
