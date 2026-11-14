@@ -1,0 +1,26 @@
+{
+  "type": "FeatureCollection",
+  "name": "Mission points (example)",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": { "name": "Base Camp Alpha", "kind": "base", "notes": "Example habitat site near the Perseverance landing area, Jezero Crater." },
+      "geometry": { "type": "Point", "coordinates": [77.45, 18.44] }
+    },
+    {
+      "type": "Feature",
+      "properties": { "name": "WP-1 Delta front", "kind": "waypoint", "notes": "Example waypoint: western delta of Jezero." },
+      "geometry": { "type": "Point", "coordinates": [77.40, 18.50] }
+    },
+    {
+      "type": "Feature",
+      "properties": { "name": "WP-2 Crater rim", "kind": "waypoint", "notes": "Example waypoint on the crater rim." },
+      "geometry": { "type": "Point", "coordinates": [77.20, 18.60] }
+    },
+    {
+      "type": "Feature",
+      "properties": { "name": "Hazard: steep slope", "kind": "hazard", "notes": "Example hazard marker." },
+      "geometry": { "type": "Point", "coordinates": [77.30, 18.35] }
+    }
+  ]
+}
