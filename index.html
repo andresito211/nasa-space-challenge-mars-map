@@ -71,6 +71,24 @@
     #progFill { height: 100%; width: 0; background: var(--c); box-shadow: 0 0 8px var(--c); }
     #profile { width: 320px; height: 70px; border: 1px solid rgba(57,215,255,.3); }
 
+    /* tabs + minimize */
+    .tabs { display: flex; gap: 4px; margin: -4px 0 8px; }
+    .tab { flex: 1; padding: 5px 0; cursor: pointer; background: transparent; color: rgba(159,233,255,.6);
+      border: 1px solid rgba(57,215,255,.3); font: bold 11px var(--mono); letter-spacing: 2px; }
+    .tab.active { color: #021018; background: var(--c); box-shadow: 0 0 8px var(--c); }
+    .min { cursor: pointer; background: transparent; color: var(--c); border: 1px solid rgba(57,215,255,.4);
+      font: bold 12px var(--mono); width: 22px; height: 22px; line-height: 18px; padding: 0; float: right; }
+    .panel.collapsed .body, .panel.collapsed #progressBox > :not(h3) { display: none; }
+    .panel.collapsed .tab:not(.active) { display: none; }
+    #right { max-height: calc(100% - 200px); display: flex; flex-direction: column; }
+    #right .body { overflow: auto; }
+    #tab-layers { width: 100%; }
+    /* make the Esri layer list blend into the HUD */
+    #layerListHost .esri-layer-list, #layerListHost calcite-list, #layerListHost .esri-widget {
+      background: transparent !important; --calcite-color-foreground-1: transparent;
+      --calcite-color-text-1: #cfefff; --calcite-color-border-3: rgba(57,215,255,.2); font-family: var(--mono);
+    }
+
     /* subtle scan-line overlay on the whole map */
     #scan { position: absolute; inset: 0; pointer-events: none; z-index: 4;
       background: repeating-linear-gradient(0deg, rgba(57,215,255,.035) 0 1px, transparent 1px 3px); }
@@ -89,7 +107,8 @@
   </div>
 
   <div id="left" class="panel">
-    <h3>// ROUTE CONTROL</h3>
+    <h3>// ROUTE CONTROL <button class="min" title="Minimize">–</button></h3>
+    <div class="body">
     <div id="compass"><span class="n">N</span><div id="compassNeedle"></div></div>
     <button id="btnStart" class="btn">◎ SET START</button>
     <button id="btnEnd" class="btn">⌖ SET DESTINATION</button>
@@ -98,30 +117,57 @@
     <button id="btnSim" class="btn" disabled>▶ SIMULATE</button>
     <button id="btnClear" class="btn">✕ CLEAR</button>
     <div id="navStatus">Ready</div>
+    </div>
   </div>
 
   <div id="right" class="panel">
-    <h3>// TELEMETRY</h3>
-    <div class="dest"><div class="lbl">DESTINATION</div><div class="val" id="hudDest">— not set —</div></div>
-    <div class="row"><span>START</span><span id="hudStart">—</span></div>
-    <div class="row"><span>ROUTE DIST</span><span id="hudDist">--</span></div>
-    <div class="row"><span>STRAIGHT LINE</span><span id="hudStraight">--</span></div>
-    <div class="row"><span>ETA</span><span id="hudEta">--</span></div>
-    <div class="row"><span>ELEV +/-</span><span id="hudGain">--</span></div>
-    <div class="row"><span>MAX SLOPE</span><span id="hudSlope">--</span></div>
-    <div class="row"><span>HEADING</span><span id="hudHeading">--</span></div>
-    <div class="row"><span>HAZARDS</span><span id="hudHazards">0</span></div>
+    <div class="tabs">
+      <button class="tab active" data-tab="telemetry">TELEMETRY</button>
+      <button class="tab" data-tab="layers">LAYERS</button>
+      <button class="min" title="Minimize">–</button>
+    </div>
+    <div class="body">
+      <div id="tab-telemetry" class="tabpane">
+        <div class="dest"><div class="lbl">DESTINATION</div><div class="val" id="hudDest">— not set —</div></div>
+        <div class="row"><span>START</span><span id="hudStart">—</span></div>
+        <div class="row"><span>ROUTE DIST</span><span id="hudDist">--</span></div>
+        <div class="row"><span>STRAIGHT LINE</span><span id="hudStraight">--</span></div>
+        <div class="row"><span>ETA</span><span id="hudEta">--</span></div>
+        <div class="row"><span>ELEV +/-</span><span id="hudGain">--</span></div>
+        <div class="row"><span>MAX SLOPE</span><span id="hudSlope">--</span></div>
+        <div class="row"><span>HEADING</span><span id="hudHeading">--</span></div>
+        <div class="row"><span>HAZARDS</span><span id="hudHazards">0</span></div>
+      </div>
+      <div id="tab-layers" class="tabpane" hidden>
+        <div id="layerListHost"></div>
+      </div>
+    </div>
   </div>
 
   <div id="bottom" class="panel">
+    <button class="min" title="Minimize" style="position:absolute;top:6px;right:8px">–</button>
     <div id="progressBox">
       <h3 style="margin:0">// TRAVERSE PROGRESS</h3>
       <div id="progTrack"><div id="progFill"></div></div>
       <div id="progText">NO ROUTE</div>
     </div>
-    <canvas id="profile"></canvas>
+    <canvas id="profile" class="body"></canvas>
   </div>
 
+  <script>
+    // HUD panels: switch tabs, minimize/restore
+    document.querySelectorAll("#right .tab").forEach(tab => tab.onclick = () => {
+      document.querySelectorAll("#right .tab").forEach(t => t.classList.toggle("active", t === tab));
+      document.querySelectorAll("#right .tabpane").forEach(p => p.hidden = p.id !== "tab-" + tab.dataset.tab);
+      document.getElementById("right").classList.remove("collapsed");
+    });
+    document.querySelectorAll(".panel .min").forEach(btn => btn.onclick = () => {
+      const panel = btn.closest(".panel");
+      const c = panel.classList.toggle("collapsed");
+      btn.textContent = c ? "+" : "–";
+      btn.title = c ? "Restore" : "Minimize";
+    });
+  </script>
   <script src="nav.js"></script>
   <script>
   // ---- OPTION A (default): load the public Esri/USGS Mars services directly.
@@ -246,7 +292,11 @@
         })
       : new MapView(common);
 
-    view.ui.add(new Expand({ view, content: new LayerList({ view }), expanded: false }), "top-right");
+    // Layer list lives in the HUD's LAYERS tab (no floating widget over the panels)
+    if (window.layerList) window.layerList.destroy();
+    const host = document.createElement("div");
+    document.getElementById("layerListHost").replaceChildren(host);
+    window.layerList = new LayerList({ view, container: host });
     if (mode === "2d") view.ui.add(new ScaleBar({ view, unit: "metric" }), "bottom-left");
 
     view.on("pointer-move", (e) => {
