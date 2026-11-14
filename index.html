@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Mars – Astronaut Map</title>
+  <link rel="stylesheet" href="https://js.arcgis.com/4.31/esri/themes/dark/main.css" />
+  <script src="https://js.arcgis.com/4.31/"></script>
+  <style>
+    html, body, #view { margin: 0; height: 100%; background: #000; }
+    #hud {
+      position: absolute; top: 12px; left: 60px; padding: 8px 14px;
+      background: rgba(10,10,10,.75); color: #ffb37a; font: 13px monospace;
+      border: 1px solid #ff7a2f; border-radius: 6px;
+    }
+  </style>
+</head>
+<body>
+  <div id="view"></div>
+  <div id="hud">MARS · cursor: <span id="coords">--</span></div>
+
+  <script>
+  // ---- OPTION A (default): load the public Esri/USGS Mars services directly.
+  //      No ArcGIS login needed.
+  // ---- OPTION B: load your saved web map instead (see bottom of file).
+
+  require([
+    "esri/Map", "esri/views/MapView", "esri/Basemap", "esri/layers/Layer",
+    "esri/widgets/LayerList", "esri/widgets/Expand", "esri/widgets/ScaleBar"
+  ], async (Map, MapView, Basemap, Layer, LayerList, Expand, ScaleBar) => {
+
+    const base = "https://astro.arcgis.com/arcgis/rest/services/OnMars/";
+    const services = [
+      { url: base + "MDIM/MapServer",      title: "MDIM 2.1 color mosaic", basemap: true },
+      { url: base + "MColorDEM/MapServer", title: "HRSC-MOLA color relief", opacity: 0.5, visible: false },
+      { url: base + "CTX1/MapServer",      title: "CTX mosaic (5 m/px)",    visible: false },
+      { url: base + "HiRISE/MapServer",    title: "HiRISE (high-res)",      visible: false },
+      { url: "https://services.arcgis.com/P3ePLMYs2RVChkJx/arcgis/rest/services/Mars_Nomenclature_All/FeatureServer/0",
+        title: "Nomenclature", opacity: 0.3 },
+      { url: "https://services.arcgis.com/P3ePLMYs2RVChkJx/arcgis/rest/services/Mars_Quadrangle_Grid/FeatureServer/0",
+        title: "Quadrangle grid", opacity: 0.5, visible: false }
+    ];
+
+    const layers = [];
+    for (const s of services) {
+      // Detects the right layer type (tiled, dynamic, feature) from the service
+      const lyr = await Layer.fromArcGISServerUrl({ url: s.url });
+      lyr.title = s.title;
+      if (s.opacity !== undefined) lyr.opacity = s.opacity;
+      if (s.visible !== undefined) lyr.visible = s.visible;
+      layers.push({ lyr, s });
+    }
+
+    const basemapLayer = layers.find(l => l.s.basemap).lyr;
+    const map = new Map({
+      // The basemap's spatial reference (Mars 2000) defines the map's coordinate system
+      basemap: new Basemap({ baseLayers: [basemapLayer], title: "Mars" }),
+      layers: layers.filter(l => !l.s.basemap).map(l => l.lyr)
+    });
+
+    const view = new MapView({ container: "view", map, zoom: 2, center: [77.5, 18.4] }); // Jezero area
+
+    view.ui.add(new Expand({ view, content: new LayerList({ view }), expanded: true }), "top-right");
+    view.ui.add(new ScaleBar({ view, unit: "metric" }), "bottom-left");
+
+    view.on("pointer-move", (e) => {
+      const p = view.toMap(e);
+      if (p) document.getElementById("coords").textContent =
+        `${p.latitude?.toFixed(3) ?? p.y.toFixed(0)}, ${p.longitude?.toFixed(3) ?? p.x.toFixed(0)}`;
+    });
+  });
+
+  /* ---- OPTION B: use the web map saved in ArcGIS Online ----
+     1. In ArcGIS Online, share "Mars – Astronaut Map" with Everyone (public),
+        or this page will need an ArcGIS sign-in.
+     2. Copy the item id from the map URL (...?webmap=<ID>).
+     3. Replace the require(...) block above with:
+
+  require(["esri/WebMap", "esri/views/MapView", "esri/config"], (WebMap, MapView, esriConfig) => {
+    esriConfig.portalUrl = "https://cucgis.maps.arcgis.com";
+    const map = new WebMap({ portalItem: { id: "PASTE_ITEM_ID_HERE" } });
+    new MapView({ container: "view", map });
+  });
+  */
+  </script>
+</body>
+</html>
