@@ -25,12 +25,41 @@ const NAV_SETTINGS = {
   maxSlopeDeg: 20,       // steeper than this = impassable
   slopeWeight: 0.15,     // extra cost per degree of slope
   hazardRadiusKm: 2,     // default radius for new hazards (changed from the panel)
-  speedKmh: 8,           // rover speed used for ETA
-  simSeconds: 60,        // real-time length of the drive simulation
   minTurnDeg: 20,        // smaller direction changes are "continue straight"
-  camAltitudeM: 450,     // follow camera height above the vehicle
-  camTilt: 72            // follow camera tilt (0 = looking straight down)
+  // ---- simulation + camera (editable in the ⚙ SETTINGS panel, saved in the browser) ----
+  speedKmh: 8,           // vehicle speed; also used for ETA
+  timeWarp: 60,          // simulation runs this many times faster than real time
+  camAltBaseM: 150,      // camera height above the vehicle at 0 km/h
+  camAltPerKmh: 12,      // extra camera height per km/h  → faster = higher = wider view
+  camTiltBase: 72,       // camera pitch on level ground (0 = straight down, 90 = horizon)
+  camPitchGain: 1.5,     // extra pitch per degree of slope: climbing looks up, descending looks down
+  camTiltMin: 45,
+  camTiltMax: 85,
+  camSmoothing: 0.08     // 0.02 = very smooth/slow camera, 0.5 = snappy
 };
+
+// Shown in the settings panel: [key, label, min, max, step, unit]
+const NAV_SETTINGS_UI = [
+  ["— SIMULATION —"],
+  ["speedKmh", "Vehicle speed", 1, 120, 1, "km/h"],
+  ["timeWarp", "Time warp", 1, 600, 1, "×"],
+  ["— POV ZOOM vs SPEED —"],
+  ["camAltBaseM", "Base camera height", 20, 1500, 10, "m"],
+  ["camAltPerKmh", "Height per km/h", 0, 60, 1, "m"],
+  ["— POV PITCH vs CLIMB —"],
+  ["camTiltBase", "Pitch on level ground", 20, 88, 1, "°"],
+  ["camPitchGain", "Pitch change per ° of slope", 0, 6, 0.1, "×"],
+  ["camTiltMin", "Minimum pitch", 10, 85, 1, "°"],
+  ["camTiltMax", "Maximum pitch", 30, 89, 1, "°"],
+  ["camSmoothing", "Camera responsiveness", 0.02, 0.5, 0.01, ""],
+  ["— ROUTE PLANNING —"],
+  ["maxSlopeDeg", "Max drivable slope", 5, 45, 1, "°"],
+  ["slopeWeight", "Slope avoidance", 0, 1, 0.01, ""]
+];
+
+// Restore saved settings (browser storage may be unavailable: ignore then)
+const NAV_DEFAULTS = { ...NAV_SETTINGS };
+try { Object.assign(NAV_SETTINGS, JSON.parse(localStorage.getItem("marsNavSettings") || "{}")); } catch (e) {}
 
 function initNav({ map, getView, MARS_SR, loadModules }) {
   const state = {
@@ -476,70 +505,102 @@ function initNav({ map, getView, MARS_SR, loadModules }) {
   }
 
   // ---------- drive simulation + follow camera ----------
+  // Distance advances by speed × time warp, so speed changes apply immediately.
+  // The button pauses/resumes; changing the route or CLEAR resets it.
   function toggleSimulation() {
-    if (state.sim?.running) { stopSim(); updateHud(); return; }
     if (!state.route) return;
-    const { path, cum } = state.route;
-    const total = cum[cum.length - 1];
-    const startT = state.sim?.t && state.sim.t < 1 ? state.sim.t : 0;
-    const t0 = performance.now() - startT * NAV_SETTINGS.simSeconds * 1000;
-    state.sim = { running: true, t: startT, heading: 0, smoothHeading: null };
-    $("btnSim").textContent = "■ STOP";
+    if (state.sim?.running) {                       // pause
+      state.sim.running = false;
+      $("btnSim").textContent = "▶ RESUME";
+      status("Paused");
+      return;
+    }
+    const total = state.route.stats.dist;
+    if (!state.sim || state.sim.d >= total) {
+      state.sim = { d: 0, t: 0, heading: 0, smoothHeading: null, smoothTilt: null };
+    }
+    state.sim.running = true;
+    state.sim.last = performance.now();
+    $("btnSim").textContent = "❚❚ PAUSE";
     status("Navigating…");
-
-    const step = (now) => {
-      if (!state.sim?.running) return;
-      const t = Math.min(1, (now - t0) / (NAV_SETTINGS.simSeconds * 1000));
-      const d = t * total;
-      let i = 1; while (i < cum.length - 1 && cum[i] < d) i++;
-      const f = (d - cum[i - 1]) / ((cum[i] - cum[i - 1]) || 1);
-      const a = path[i - 1], b = path[i];
-      const pos = { x: a[0] + (b[0] - a[0]) * f, y: a[1] + (b[1] - a[1]) * f, z: a[2] + (b[2] - a[2]) * f };
-      const heading = bearing(P(a), P(b));
-
-      // Grade over the next ~300 m (smoother than a single grid step)
-      let j = i; while (j < cum.length - 1 && cum[j] - d < 0.3) j++;
-      const ahead = Math.max(0.05, cum[j] - d);
-      const grade = Math.atan((path[j][2] - pos.z) / (ahead * 1000)) / toR;
-
-      // Smooth the camera heading so it doesn't snap at every grid step
-      const sh = state.sim.smoothHeading ?? heading;
-      const diff = ((heading - sh + 540) % 360) - 180;
-      const smooth = (sh + diff * 0.08 + 360) % 360;
-
-      Object.assign(state.sim, { pos, heading, smoothHeading: smooth, t, d, grade });
-      $("hudHeading").textContent = Math.round(heading) + "°";
-      setCompass(heading, grade);
-      updateGuidance(d);
-      setProgress(t); drawProfile(); updateSimGraphic();
-      if (state.follow) followCamera(pos, smooth);
-
-      if (t < 1) requestAnimationFrame(step);
-      else {
-        state.sim.running = false;
-        $("btnSim").textContent = "▶ SIMULATE";
-        status("Destination reached");
-      }
-    };
     requestAnimationFrame(step);
   }
 
-  // Waze-style camera: 3D = behind and above the vehicle looking forward; 2D = heading-up, zoomed in.
-  function followCamera(pos, heading) {
+  function step(now) {
+    const sim = state.sim;
+    if (!sim?.running || !state.route) return;
+    const { path, cum } = state.route;
+    const total = cum[cum.length - 1];
+    const dtH = Math.min(0.25, (now - sim.last) / 1000) / 3600;   // hours of real time (capped if the tab slept)
+    sim.last = now;
+    sim.d = Math.min(total, sim.d + NAV_SETTINGS.speedKmh * NAV_SETTINGS.timeWarp * dtH);
+    const d = sim.d, t = d / total;
+
+    let i = 1; while (i < cum.length - 1 && cum[i] < d) i++;
+    const f = (d - cum[i - 1]) / ((cum[i] - cum[i - 1]) || 1);
+    const a = path[i - 1], b = path[i];
+    const pos = { x: a[0] + (b[0] - a[0]) * f, y: a[1] + (b[1] - a[1]) * f, z: a[2] + (b[2] - a[2]) * f };
+    const heading = bearing(P(a), P(b));
+
+    // Grade over the next ~300 m (smoother than a single grid step)
+    let j = i; while (j < cum.length - 1 && cum[j] - d < 0.3) j++;
+    const ahead = Math.max(0.05, cum[j] - d);
+    const grade = Math.atan((path[j][2] - pos.z) / (ahead * 1000)) / toR;
+
+    // Smoothed camera heading and pitch
+    const k = NAV_SETTINGS.camSmoothing;
+    const sh = sim.smoothHeading ?? heading;
+    const smoothHeading = (sh + (((heading - sh + 540) % 360) - 180) * k + 360) % 360;
+    const targetTilt = Math.max(NAV_SETTINGS.camTiltMin, Math.min(NAV_SETTINGS.camTiltMax,
+                         NAV_SETTINGS.camTiltBase + NAV_SETTINGS.camPitchGain * grade));
+    const st = sim.smoothTilt ?? targetTilt;
+    const smoothTilt = st + (targetTilt - st) * k;
+
+    Object.assign(sim, { pos, heading, smoothHeading, smoothTilt, t, grade });
+    $("hudHeading").textContent = Math.round(heading) + "°";
+    setCompass(heading, grade);
+    updateGuidance(d);
+    setProgress(t); drawProfile(); updateSimGraphic(); updateCamReadout();
+    if (state.follow) followCamera(pos, smoothHeading, smoothTilt, grade);
+
+    if (d < total) requestAnimationFrame(step);
+    else {
+      sim.running = false;
+      $("btnSim").textContent = "▶ RESTART";
+      status("Destination reached");
+    }
+  }
+
+  // Camera height grows with speed (faster = zoomed out, like Waze on a highway)
+  const camAltitude = () => NAV_SETTINGS.camAltBaseM + NAV_SETTINGS.camAltPerKmh * NAV_SETTINGS.speedKmh;
+
+  function updateCamReadout() {
+    $("hudSpeed").textContent = `${NAV_SETTINGS.speedKmh} km/h · ${NAV_SETTINGS.timeWarp}×`;
+    const tilt = state.sim?.smoothTilt ?? NAV_SETTINGS.camTiltBase;
+    $("hudCam").textContent = `${Math.round(camAltitude())} m · ${Math.round(tilt)}°`;
+  }
+
+  // Waze-style camera: 3D = behind and above the vehicle looking forward; 2D = heading-up.
+  function followCamera(pos, heading, tilt, grade) {
     const view = getView();
     if (!view || !view.ready) return;
+    const alt = camAltitude();
     if (view.type === "3d") {
-      const { camAltitudeM, camTilt } = NAV_SETTINGS;
-      const backKm = (camAltitudeM * Math.tan(camTilt * toR)) / 1000 * 0.6;
+      // Look-at point lies alt·tan(tilt) ahead of the camera; put the camera ~60 % of
+      // that distance behind the vehicle so it sits in the lower part of the screen.
+      const lookKm = (alt * Math.tan(Math.min(tilt, 85) * toR)) / 1000;
+      const backKm = lookKm * 0.6;
       const camPos = offset(pos, (heading + 180) % 360, backKm);
+      // Stay above rising ground behind/ahead when climbing steeply
+      const lift = Math.max(0, Math.tan(grade * toR) * backKm * 1000);
       view.camera = new Camera({
-        position: { type: "point", x: camPos.x, y: camPos.y, z: pos.z + camAltitudeM, spatialReference: MARS_SR },
-        heading, tilt: camTilt
+        position: { type: "point", x: camPos.x, y: camPos.y, z: pos.z + alt + lift, spatialReference: MARS_SR },
+        heading, tilt
       });
     } else {
       view.center = { type: "point", x: pos.x, y: pos.y, spatialReference: MARS_SR };
       view.rotation = (360 - heading) % 360;   // heading-up
-      if (view.scale > 120000) view.scale = 60000;
+      view.scale = alt * 60;                   // same speed → zoom rule as in 3D
     }
   }
 
@@ -551,6 +612,51 @@ function initNav({ map, getView, MARS_SR, loadModules }) {
     const v = getView();
     if (v && v.type === "2d" && v.rotation) v.rotation = 0;   // back to north-up
   }
+
+  // ---------- settings panel ----------
+  function buildSettings() {
+    const box = $("settingsBody");
+    box.replaceChildren();
+    for (const [key, label, min, max, stepV, unit] of NAV_SETTINGS_UI) {
+      if (!label) {   // section header
+        const h = document.createElement("div"); h.className = "set-h"; h.textContent = key; box.append(h); continue;
+      }
+      const row = document.createElement("label"); row.className = "set-row";
+      const name = document.createElement("span"); name.textContent = label;
+      const val = document.createElement("span"); val.className = "set-val";
+      const input = document.createElement("input");
+      Object.assign(input, { type: "range", min, max, step: stepV, value: NAV_SETTINGS[key] });
+      const show = () => { val.textContent = `${NAV_SETTINGS[key]} ${unit}`; };
+      input.oninput = () => {
+        NAV_SETTINGS[key] = parseFloat(input.value);
+        if (key === "camTiltMin" && NAV_SETTINGS.camTiltMin > NAV_SETTINGS.camTiltMax) NAV_SETTINGS.camTiltMax = NAV_SETTINGS.camTiltMin;
+        show(); applySettings();
+      };
+      show();
+      row.append(name, val, input); box.append(row);
+    }
+  }
+  let saveTimer = null;
+  function applySettings() {
+    if (state.route) state.route.stats.etaH = state.route.stats.dist / NAV_SETTINGS.speedKmh;
+    updateCamReadout();
+    if (!state.sim) updateHud(); else setProgress(state.sim.t);
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => { try { localStorage.setItem("marsNavSettings", JSON.stringify(NAV_SETTINGS)); } catch (e) {} }, 300);
+  }
+  $("btnSettings").onclick = () => { $("settings").hidden = !$("settings").hidden; };
+  $("btnSettingsClose").onclick = () => { $("settings").hidden = true; };
+  $("btnSettingsReset").onclick = () => { Object.assign(NAV_SETTINGS, NAV_DEFAULTS); buildSettings(); applySettings(); };
+  // Keyboard: + / - change speed by 5 km/h while driving
+  window.addEventListener("keydown", (e) => {
+    if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT") return;
+    if (e.key === "+" || e.key === "=") NAV_SETTINGS.speedKmh = Math.min(120, NAV_SETTINGS.speedKmh + 5);
+    else if (e.key === "-") NAV_SETTINGS.speedKmh = Math.max(1, NAV_SETTINGS.speedKmh - 5);
+    else return;
+    buildSettings(); applySettings();
+  });
+  buildSettings();
+  updateCamReadout();
 
   updateHud();
   return { attach, computeRoute, state, settings: NAV_SETTINGS };
