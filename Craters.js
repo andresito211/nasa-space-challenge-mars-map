@@ -67,6 +67,12 @@ function initCraterLayer({ map, MARS_SR, loadModules, settings }) {
     return ids.map(id => store.get(id));
   }
 
+  // Craters coming from an imported route file
+  function addCraters(list) {
+    for (const c of list) if (c.id && !store.has(c.id)) store.set(c.id, c);
+    scheduleRebuild();
+  }
+
   // The planner tells which craters are no-go zones, so they are drawn differently
   function setBlocked(ids) { blockedIds = new Set(ids); scheduleRebuild(); }
 
@@ -151,5 +157,5 @@ function initCraterLayer({ map, MARS_SR, loadModules, settings }) {
     reactiveUtils.when(() => v.stationary, () => { if (view === v) loadView(); });
   }
 
-  return { getForBbox, setBlocked, attach, loadView, store };
+  return { getForBbox, setBlocked, addCraters, attach, loadView, store };
 }

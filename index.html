@@ -87,6 +87,29 @@
     .subrow { display: flex; gap: 4px; margin: -2px 0 4px 12px; border-left: 2px solid rgba(57,215,255,.4); padding-left: 6px; }
     .subrow[hidden] { display: none; }
     .btn.mini { margin: 2px 0; padding: 4px 6px; font-size: 10px; text-align: center; }
+    /* place search */
+    #searchFly { width: 300px; z-index: 7; opacity: 0; pointer-events: none;
+      transform: translateX(-16px); transition: opacity .2s, transform .2s; }
+    #searchFly.open { opacity: 1; pointer-events: auto; transform: translateX(0); }
+    #searchInput { width: 100%; box-sizing: border-box; padding: 7px 8px; margin-bottom: 6px;
+      background: #061a28; color: #e8fbff; border: 1px solid rgba(57,215,255,.6); font: 12px var(--mono); outline: none; }
+    #searchInput:focus { box-shadow: 0 0 8px rgba(57,215,255,.6); }
+    #searchResults { max-height: 300px; overflow-y: auto; }
+    .sr { padding: 5px 6px; cursor: pointer; border-bottom: 1px solid rgba(57,215,255,.12); }
+    .sr:hover, .sr.sel { background: rgba(57,215,255,.18); }
+    .sr .n { color: #fff; font-weight: bold; }
+    .sr .n b { color: var(--c); }
+    .sr .m { font-size: 10px; color: rgba(159,233,255,.65); margin-top: 2px; }
+    .sr.none { color: rgba(159,233,255,.6); cursor: default; }
+
+    /* ROUTE sub-window */
+    #routeFly { width: 220px; z-index: 7; opacity: 0; pointer-events: none;
+      transform: translateX(-16px); transition: opacity .2s, transform .2s; }
+    #routeFly.open { opacity: 1; pointer-events: auto; transform: translateX(0); }
+    #routeFly .sep { height: 1px; background: rgba(57,215,255,.25); margin: 8px 0; }
+    #btnRouteMenu .chev { float: right; transition: transform .2s; }
+    #btnRouteMenu.open .chev { transform: rotate(180deg); }
+    #btnRouteMenu.open { background: rgba(57,215,255,.2); }
     /* COMPUTE ROUTE blinks when the route is outdated */
     @keyframes pulse { 0%, 100% { box-shadow: 0 0 0 rgba(255,179,71,0); } 50% { box-shadow: 0 0 12px rgba(255,179,71,.9); } }
     .btn.pulse { border-color: #ffb347; color: #ffd27a; animation: pulse 1.2s infinite; }
@@ -217,8 +240,7 @@
         <option value="0.5">0.5 km</option><option value="1">1 km</option><option value="2">2 km</option>
         <option value="3">3 km</option><option value="5">5 km</option><option value="10">10 km</option>
       </select></div>
-    <button id="btnRoute" class="btn">⟲ COMPUTE ROUTE</button>
-    <button id="btnAuto" class="btn">↻ AUTO RECOMPUTE: OFF</button>
+    <button id="btnRouteMenu" class="btn">⟲ ROUTE <span class="chev">▸</span></button>
     <button id="btnSim" class="btn" disabled>▶ SIMULATE</button>
     <button id="btnFollow" class="btn">◉ FOLLOW CAM</button>
     <button id="btnOverview" class="btn">⛶ ROUTE OVERVIEW</button>
@@ -229,6 +251,26 @@
     <button id="btnClear" class="btn">✕ CLEAR</button>
     <div id="navStatus">Ready</div>
     </div>
+  </div>
+
+  <!-- Place search: opens next to ROUTE CONTROL with SET START / SET DESTINATION -->
+  <div id="searchFly" class="panel" aria-hidden="true">
+    <h3 id="searchTitle">// SEARCH START <button id="btnSearchClose" class="min" title="Close">✕</button></h3>
+    <input id="searchInput" type="text" placeholder="Name: Jezero, Gale, Olympus Mons…" autocomplete="off" spellcheck="false">
+    <div id="searchResults"></div>
+    <div class="set-note">Type a name, or click on the map. ↑ ↓ Enter to choose, Esc to close.</div>
+  </div>
+
+  <!-- ROUTE sub-window: slides out to the right of ROUTE CONTROL -->
+  <div id="routeFly" class="panel" aria-hidden="true">
+    <h3>// ROUTE <button id="btnRouteFlyClose" class="min" title="Close">✕</button></h3>
+    <button id="btnRoute" class="btn">⟲ COMPUTE ROUTE</button>
+    <button id="btnAuto" class="btn">↻ AUTO RECOMPUTE: OFF</button>
+    <div class="sep"></div>
+    <button id="btnExport" class="btn" disabled>⇩ EXPORT ROUTE (.json)</button>
+    <button id="btnImport" class="btn">⇧ IMPORT ROUTE (.json)</button>
+    <input id="fileImport" type="file" accept=".json,application/json" hidden>
+    <div id="routeInfo" class="set-note">No route yet.</div>
   </div>
 
   <div id="right" class="panel">
@@ -247,6 +289,8 @@
         <div class="row"><span>ELEV +/-</span><span id="hudGain">--</span></div>
         <div class="row"><span>MAX SLOPE</span><span id="hudSlope">--</span></div>
         <div class="row"><span>HEADING</span><span id="hudHeading">--</span></div>
+        <div class="row"><span>RADIATION (EST.)</span><span id="hudRad">--</span></div>
+        <div class="row"><span>ROUTE DOSE (EST.)</span><span id="hudDose">--</span></div>
         <div class="row"><span>SPEED</span><span id="hudSpeed">--</span></div>
         <div class="row"><span>POV HEIGHT · PITCH</span><span id="hudCam">--</span></div>
         <div class="row"><span>HAZARDS</span><span id="hudHazards">0</span></div>
@@ -281,6 +325,7 @@
       btn.title = c ? "Restore" : "Minimize";
     });
   </script>
+  <script src="science.js"></script>
   <script src="craters.js"></script>
   <script src="nav.js"></script>
   <script>
@@ -341,13 +386,9 @@
       })] }
     });
 
-    // NASA Mars Trek: MOLA global surface roughness (see addTrekLayer below)
-    await addTrekLayer(map, {
-      id: "mola_roughness",
-      title: "MOLA surface roughness (NASA Trek)",
-      opacity: 0.7,
-      visible: true
-    });
+    // Science layers from NASA Mars Trek (minerals, dust, thermal, roughness) — see science.js
+    try { await initScienceLayers({ map, basemapLayer, loadModules }); }
+    catch (err) { console.error("Science layers unavailable:", err); }
 
     // Georeferenced data: feature names, landing sites and your own mission points
     await addGeoData(map);
@@ -355,13 +396,17 @@
     // Navigation system (route planner + HUD), see nav.js
     // Craters layer (USGS, loaded on demand) — see craters.js; the route planner uses it too
     const craterLayer = initCraterLayer({ map, MARS_SR, loadModules, settings: NAV_SETTINGS });
-    window.nav = initNav({ map, getView: () => currentView, MARS_SR, loadModules, craterLayer });
+    window.nav = initNav({ map, getView: () => currentView, MARS_SR, loadModules, craterLayer,
+                           getGazetteer: buildGazetteer });
 
     // Start in 3D; the button in the HUD switches between globe and flat map.
     // The button is wired up first and never waits for a view to finish loading,
     // so it stays usable even if a layer is slow or fails.
     const btn = document.getElementById("toggle");
     let mode = "3d";
+
+    // The session autosave was removed: clean up the copy older versions kept in the browser
+    try { localStorage.removeItem("marsNavSession"); } catch (e) {}
     const label = () => { btn.textContent = mode === "3d" ? "Switch to 2D" : "Switch to 3D globe"; };
     btn.onclick = async () => {
       mode = mode === "3d" ? "2d" : "3d";
@@ -533,6 +578,30 @@
     } catch (err) {
       console.warn("No mission.geojson loaded:", err);
     }
+  }
+
+  // Searchable place names for SET START / SET DESTINATION: IAU feature names,
+  // landers & rovers and your mission points. Built once, from data already loaded.
+  let gazetteerPromise = null;
+  function buildGazetteer() {
+    if (gazetteerPromise) return gazetteerPromise;
+    gazetteerPromise = (async () => {
+      const list = [];
+      (geo.names?.source || []).forEach(g => {
+        const a = g.attributes;
+        list.push({ name: a.clean_name, kind: (a.type || "").split(",")[0] || "Feature", x: g.geometry.x, y: g.geometry.y,
+                    size: a.diameter || 0, info: a.diameter ? `${Math.round(a.diameter)} km` : "" });
+      });
+      (geo.mission?.source || []).forEach(g => list.push({ name: g.attributes.name, kind: `Mission ${g.attributes.kind}`,
+        x: g.geometry.x, y: g.geometry.y, size: 1e6, info: g.attributes.notes || "" }));
+      try {
+        const res = await geo.landers.queryFeatures({ where: "1=1", outFields: ["name", "landed"], returnGeometry: true });
+        res.features.forEach(f => list.push({ name: f.attributes.name, kind: "Lander / rover", x: f.geometry.x, y: f.geometry.y,
+          size: 1e5, info: String(f.attributes.landed || "") }));
+      } catch (e) { console.warn("Landers not searchable:", e); }
+      return list;
+    })();
+    return gazetteerPromise;
   }
 
   // Labels: big features show from far away, small craters only when you zoom in.

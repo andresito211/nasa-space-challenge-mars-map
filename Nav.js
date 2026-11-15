@@ -32,7 +32,15 @@ const NAV_SETTINGS = {
   craterMaxKm: 8,        // craters up to this size are no-go zones; bigger ones (like Jezero)
                          // are left to the slope check, since their floors can be driven on
   craterMargin: 1.15,    // no-go radius = crater radius × this (covers the rim)
-  craterViewMaxDeg: 8,   // crater layer loads the visible area only when the view is narrower than this
+  craterViewMaxDeg: 8,
+  // ---- radiation estimate (galactic cosmic rays) ----
+  // Reference: Curiosity RAD, 0.67 mSv/day dose equivalent at Gale Crater (−4.4 km).
+  // Dose falls as the air column above grows, so it is scaled with surface pressure,
+  // which follows elevation: P ∝ exp(−h / scale height).
+  radDoseRef: 0.67,      // mSv/day at the reference elevation
+  radRefElevM: -4400,    // reference elevation (Gale Crater)
+  radScaleHeightM: 11100,// Mars atmospheric scale height
+  radExponent: 0.35,     // how strongly dose follows pressure (dose ∝ pressure^−exponent)   // crater layer loads the visible area only when the view is narrower than this
   minTurnDeg: 10,        // smaller direction changes are "continue straight" (no instruction)
   pathSmoothing: true,   // straighten the grid zigzag wherever the straight line is still safe
   simplifyCells: 0.5,    // bends smaller than this (in grid cells) don't become turn points
@@ -74,7 +82,10 @@ const NAV_SETTINGS_UI = [
   ["craterMinKm", "Smallest crater to avoid", 1, 10, 0.5, "km"],
   ["craterMaxKm", "Largest crater to avoid", 2, 50, 1, "km"],
   ["craterMargin", "Rim safety factor", 1, 1.6, 0.05, "×"],
-  ["craterViewMaxDeg", "Crater layer: load when view narrower than", 2, 20, 1, "°"]
+  ["craterViewMaxDeg", "Crater layer: load when view narrower than", 2, 20, 1, "°"],
+  ["— RADIATION ESTIMATE —"],
+  ["radDoseRef", "Dose at Gale Crater (RAD)", 0.1, 2, 0.01, "mSv/day"],
+  ["radExponent", "Sensitivity to air column", 0, 1, 0.01, ""]
 ];
 
 // Restore saved settings (browser storage may be unavailable: ignore then)
@@ -89,7 +100,7 @@ try {
   Object.assign(NAV_SETTINGS, saved);
 } catch (e) {}
 
-function initNav({ map, getView, MARS_SR, loadModules, craterLayer }) {
+function initNav({ map, getView, MARS_SR, loadModules, craterLayer, getGazetteer }) {
   const state = {
     mode: null,           // "start" | "end" | "hazard" | null
     start: null, end: null,
@@ -120,8 +131,85 @@ function initNav({ map, getView, MARS_SR, loadModules, craterLayer }) {
     ["btnStart", "btnEnd", "btnHazard"].forEach(id => $(id).classList.remove("active"));
     if (state.mode) $({ start: "btnStart", end: "btnEnd", hazard: "btnHazard" }[state.mode]).classList.add("active");
     status(state.mode === "hazard" ? "Click to place a hazard · click inside one to remove it"
-         : state.mode ? `Click on the map to place the ${state.mode === "end" ? "destination" : "start"}` : "Ready");
+         : state.mode ? `Search a name or click on the map to place the ${state.mode === "end" ? "destination" : "start"}` : "Ready");
+    if (state.mode === "start" || state.mode === "end") openSearch(state.mode); else closeSearch();
   };
+
+  // ---------- search by name (SET START / SET DESTINATION) ----------
+  let searchList = null, searchHits = [], searchSel = 0;
+  const norm = (t) => (t || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+
+  async function openSearch(which) {
+    $("searchTitle").firstChild.textContent = `// SEARCH ${which === "end" ? "DESTINATION" : "START"} `;
+    const fly = $("searchFly"), b = $(which === "end" ? "btnEnd" : "btnStart").getBoundingClientRect();
+    fly.style.left = ($("left").getBoundingClientRect().right + 10) + "px";
+    fly.style.top = Math.max(10, Math.min(b.top - 30, window.innerHeight - 420)) + "px";
+    fly.classList.add("open"); fly.setAttribute("aria-hidden", "false");
+    $("routeFly")?.classList.remove("open"); $("btnRouteMenu")?.classList.remove("open");
+    $("searchInput").value = "";
+    $("searchResults").replaceChildren();
+    setTimeout(() => $("searchInput").focus(), 50);
+    if (!searchList && getGazetteer) {
+      $("searchResults").innerHTML = '<div class="sr none">Loading names…</div>';
+      searchList = (await getGazetteer()).map(p => ({ ...p, key: norm(p.name) }));
+      runSearch();
+    }
+  }
+  function closeSearch() { $("searchFly").classList.remove("open"); $("searchFly").setAttribute("aria-hidden", "true"); }
+
+  function runSearch() {
+    const q = norm($("searchInput").value.trim());
+    const box = $("searchResults");
+    box.replaceChildren();
+    if (!q || !searchList) return;
+    // rank: exact name, name starts with, a word starts with, contains; then bigger features first
+    const score = (k) => k === q ? 0 : k.startsWith(q) ? 1 : (" " + k).includes(" " + q) ? 2 : k.includes(q) ? 3 : 9;
+    searchHits = searchList.map(p => ({ p, s: score(p.key) })).filter(h => h.s < 9)
+      .sort((a, b) => a.s - b.s || b.p.size - a.p.size || a.p.name.localeCompare(b.p.name)).slice(0, 15).map(h => h.p);
+    searchSel = 0;
+    if (!searchHits.length) { box.innerHTML = '<div class="sr none">No match — try another spelling</div>'; return; }
+    searchHits.forEach((p, i) => {
+      const row = document.createElement("div");
+      row.className = "sr" + (i === 0 ? " sel" : "");
+      const at = p.key.indexOf(q);
+      const name = document.createElement("div"); name.className = "n";
+      name.append(p.name.slice(0, at), Object.assign(document.createElement("b"), { textContent: p.name.slice(at, at + q.length) }),
+                  p.name.slice(at + q.length));
+      const meta = document.createElement("div"); meta.className = "m";
+      meta.textContent = `${p.kind}${p.info ? " · " + p.info : ""} · ${fmt({ x: p.x, y: p.y })}`;
+      row.append(name, meta);
+      row.onclick = () => choosePlace(p);
+      row.onmouseenter = () => { searchSel = i; highlight(); };
+      box.append(row);
+    });
+  }
+  const highlight = () => [...$("searchResults").children].forEach((r, i) => {
+    r.classList.toggle("sel", i === searchSel); if (i === searchSel) r.scrollIntoView({ block: "nearest" }); });
+
+  function choosePlace(p) {
+    const which = state.mode;
+    if (which !== "start" && which !== "end") return;
+    const pt = { x: p.x, y: p.y };
+    if (which === "start") state.start = pt; else state.end = pt;
+    setMode(null);                 // closes the search too
+    stopSim(); updateHud(); redraw();
+    status(`${which === "end" ? "Destination" : "Start"}: ${p.name}`);
+    // show the chosen place (keeps the overview fit when both points are set)
+    const v = getView();
+    if (state.start && state.end && !state.follow) showOverview();
+    else if (v?.ready) v.goTo({ target: { type: "point", x: p.x, y: p.y, spatialReference: MARS_SR },
+                                 scale: Math.max(250000, (p.size < 1e5 ? p.size : 20) * 20000) }, { duration: 1000 }).catch(() => {});
+    inputsChanged();
+  }
+
+  $("searchInput").addEventListener("input", runSearch);
+  $("searchInput").addEventListener("keydown", (e) => {
+    if (e.key === "ArrowDown") { searchSel = Math.min(searchHits.length - 1, searchSel + 1); highlight(); e.preventDefault(); }
+    else if (e.key === "ArrowUp") { searchSel = Math.max(0, searchSel - 1); highlight(); e.preventDefault(); }
+    else if (e.key === "Enter" && searchHits[searchSel]) choosePlace(searchHits[searchSel]);
+    else if (e.key === "Escape") setMode(null);
+  });
+  $("btnSearchClose").onclick = () => setMode(null);
   $("btnStart").onclick = () => setMode("start");
   $("btnEnd").onclick = () => setMode("end");
   $("btnHazard").onclick = () => setMode("hazard");
@@ -177,8 +265,9 @@ function initNav({ map, getView, MARS_SR, loadModules, craterLayer }) {
     if (NAV_SETTINGS.autoRecompute || !state.route) { if (NAV_SETTINGS.autoRecompute) computeRoute(); return; }
     state.route.stale = true;
     $("btnRoute").classList.add("pulse");
+    $("btnRouteMenu").classList.add("pulse");
     status("Route outdated — press COMPUTE ROUTE");
-    redraw();
+    updateHud(); redraw();
   }
   $("hazardRadius").value = String(NAV_SETTINGS.hazardRadiusKm);
   $("hazardRadius").onchange = (e) => { NAV_SETTINGS.hazardRadiusKm = parseFloat(e.target.value); };
@@ -187,9 +276,121 @@ function initNav({ map, getView, MARS_SR, loadModules, craterLayer }) {
     state.hazards = state.hazards.filter(h => h.fromFile);
     state.autoHazards = [];
     craterLayer?.setBlocked([]);
-    $("btnRoute").classList.remove("pulse");
+    $("btnRoute").classList.remove("pulse"); $("btnRouteMenu").classList.remove("pulse");
     updateHud(); redraw(); status("Cleared");
   };
+
+  // ---------- ROUTE sub-window (slides out next to ROUTE CONTROL) ----------
+  function placeFly() {
+    const b = $("btnRouteMenu").getBoundingClientRect(), l = $("left").getBoundingClientRect();
+    const fly = $("routeFly");
+    fly.style.left = (l.right + 10) + "px";
+    fly.style.top = Math.max(10, Math.min(b.top - 30, window.innerHeight - fly.offsetHeight - 10)) + "px";
+  }
+  const setFly = (open) => {
+    $("routeFly").classList.toggle("open", open);
+    $("routeFly").setAttribute("aria-hidden", String(!open));
+    $("btnRouteMenu").classList.toggle("open", open);
+    if (open) placeFly();
+  };
+  $("btnRouteMenu").onclick = () => setFly(!$("routeFly").classList.contains("open"));
+  $("btnRouteFlyClose").onclick = () => setFly(false);
+  window.addEventListener("resize", () => { if ($("routeFly").classList.contains("open")) placeFly(); });
+  $("left").addEventListener("scroll", () => { if ($("routeFly").classList.contains("open")) placeFly(); });
+
+  // ---------- export / import (JSON) ----------
+  const ROUTE_FORMAT = "mars-nav-route";
+  const r6 = (v) => Math.round(v * 1e6) / 1e6;
+
+  function exportRoute() {
+    if (!state.route) return;
+    const data = getRouteData();
+    downloadJson(data);
+  }
+
+  // Everything needed to rebuild the route (used by the export)
+  function getRouteData() {
+    if (!state.route) return null;
+    const st = state.route.stats;
+    return {
+      format: ROUTE_FORMAT, version: 1,
+      name: `Route ${fmt(state.start)} → ${fmt(state.end)}`,
+      exported: new Date().toISOString(),
+      crs: { wkid: MARS_SR.wkid, name: "GCS Mars 2000 (sphere)", units: "degrees; elevation in meters" },
+      start: { lon: r6(state.start.x), lat: r6(state.start.y) },
+      end: { lon: r6(state.end.x), lat: r6(state.end.y) },
+      hazards: state.hazards.map(h => ({ lon: r6(h.x), lat: r6(h.y), radius_km: h.radiusKm, name: h.name,
+                                         source: h.fromFile ? "mission.geojson" : "manual" })),
+      craters_avoided: state.autoHazards.map(h => ({ id: h.id, lon: r6(h.x), lat: r6(h.y),
+                                                     no_go_radius_km: Math.round(h.radiusKm * 1000) / 1000 })),
+      planning: Object.fromEntries(["maxSlopeDeg", "slopeWeight", "pathSmoothing", "minTurnDeg", "simplifyCells",
+        "useCraters", "craterMinKm", "craterMaxKm", "craterMargin", "speedKmh"].map(k => [k, NAV_SETTINGS[k]])),
+      stats: { distance_km: +st.dist.toFixed(3), straight_km: +st.straight.toFixed(3), eta_h: +st.etaH.toFixed(3),
+               gain_m: Math.round(st.gain), loss_m: Math.round(st.loss), max_slope_deg: +st.maxSlope.toFixed(2),
+               dose_msv_est: +st.doseMSv.toFixed(4) },
+      maneuvers: state.route.maneuvers.map(m => ({ index: m.i, at_km: +m.at.toFixed(3), turn_deg: Math.round(m.delta),
+                                                   instruction: m.text, icon: m.icon })),
+      path: state.route.path.map(p => [r6(p[0]), r6(p[1]), Math.round(p[2] * 10) / 10])   // [lon, lat, elevation m]
+    };
+  }
+
+  function downloadJson(data) {
+    const blob = new Blob([JSON.stringify(data, null, 1)], { type: "application/json" });
+    const a = document.createElement("a");
+    const t = new Date(), pad = (n) => String(n).padStart(2, "0");
+    a.download = `mars-route-${t.getFullYear()}${pad(t.getMonth() + 1)}${pad(t.getDate())}-${pad(t.getHours())}${pad(t.getMinutes())}.json`;
+    a.href = URL.createObjectURL(blob);
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    status(`Exported ${a.download}`);
+  }
+
+  async function importRoute(file) {
+    try {
+      const data = JSON.parse(await file.text());
+      await applyRouteData(data);
+      status(`Imported route · ${state.route.stats.dist.toFixed(1)} km · ${state.route.maneuvers.length - 1} turns`);
+    } catch (err) {
+      console.error("Import failed:", err);
+      status("Import failed: " + err.message);
+    }
+  }
+
+  async function applyRouteData(data) {
+    {
+      if (data.format !== ROUTE_FORMAT) throw new Error("not a Mars route file (format field missing)");
+      if (!Array.isArray(data.path) || data.path.length < 2) throw new Error("the file has no route path");
+      if (data.crs?.wkid && data.crs.wkid !== MARS_SR.wkid) console.warn("Route file uses another coordinate system:", data.crs);
+      await ready;
+      stopSim();
+      state.start = { x: data.start.lon, y: data.start.lat };
+      state.end = { x: data.end.lon, y: data.end.lat };
+      // hazards: keep mission.geojson ones, add the file's manual ones
+      state.hazards = state.hazards.filter(h => h.fromFile).concat(
+        (data.hazards || []).filter(h => h.source !== "mission.geojson")
+          .map(h => ({ x: h.lon, y: h.lat, radiusKm: h.radius_km, name: h.name || "Hazard" })));
+      state.autoHazards = (data.craters_avoided || []).map(c => ({ x: c.lon, y: c.lat, radiusKm: c.no_go_radius_km,
+        name: "Crater", auto: true, id: c.id }));
+      craterLayer?.addCraters?.((data.craters_avoided || []).map(c => ({ id: c.id, x: c.lon, y: c.lat,
+        d: (2 * c.no_go_radius_km) / (data.planning?.craterMargin || NAV_SETTINGS.craterMargin) })));
+      craterLayer?.setBlocked(state.autoHazards.map(h => h.id));
+      // rebuild the route from the saved path; keep the saved turn instructions
+      const path = data.path.map(p => [p[0], p[1], p[2] ?? 0]);
+      state.route = buildRoute({ path, tol: 1e-9 });
+      if (Array.isArray(data.maneuvers) && data.maneuvers.length) {
+        state.route.maneuvers = data.maneuvers.map(m => ({ i: m.index, at: state.route.cum[m.index] ?? m.at_km,
+          delta: m.turn_deg || 0, ...(m.turn_deg ? describeTurn(m.turn_deg) : {}),
+          text: m.instruction, icon: m.icon, short: (m.instruction || "").toUpperCase() }));
+      }
+      $("btnRoute").classList.remove("pulse"); $("btnRouteMenu").classList.remove("pulse");
+      updateHud(); redraw();
+      if (!state.follow) showOverview();
+    }
+  }
+
+  $("btnExport").onclick = exportRoute;
+  $("btnImport").onclick = () => $("fileImport").click();
+  $("fileImport").onchange = (e) => { const f = e.target.files[0]; if (f) importRoute(f); e.target.value = ""; };
 
   function status(msg) { $("navStatus").textContent = msg; }
 
@@ -253,6 +454,19 @@ function initNav({ map, getView, MARS_SR, loadModules, craterLayer }) {
   };
   const P = (a) => ({ x: a[0], y: a[1] });
 
+  // Estimated radiation dose rate (mSv/day) at an elevation in meters
+  const radRate = (zM) => NAV_SETTINGS.radDoseRef *
+    Math.exp(NAV_SETTINGS.radExponent * (zM - NAV_SETTINGS.radRefElevM) / NAV_SETTINGS.radScaleHeightM);
+  // Estimated dose (mSv) received while driving the route at the set speed
+  function routeDose(route) {
+    let dose = 0;
+    for (let i = 1; i < route.path.length; i++) {
+      const hours = (route.cum[i] - route.cum[i - 1]) / NAV_SETTINGS.speedKmh;
+      dose += (hours / 24) * radRate((route.path[i][2] + route.path[i - 1][2]) / 2);
+    }
+    return dose;
+  }
+
   // ---------- route planning ----------
   async function computeRoute() {
     await ready;
@@ -273,7 +487,7 @@ function initNav({ map, getView, MARS_SR, loadModules, craterLayer }) {
         return;
       }
       state.route = buildRoute(result);
-      $("btnRoute").classList.remove("pulse");
+      $("btnRoute").classList.remove("pulse"); $("btnRouteMenu").classList.remove("pulse");
       updateHud(); redraw();
       if (!state.follow) showOverview();
       const avoided = [...state.hazards, ...state.autoHazards].filter(h => h.nearRoute).length;
@@ -497,10 +711,12 @@ function initNav({ map, getView, MARS_SR, loadModules, craterLayer }) {
       maneuvers.push({ i: wIdx[k], at: cum[wIdx[k]], delta, ...describeTurn(delta) });
     }
     maneuvers.push({ i: path.length - 1, at: dist, delta: 0, icon: "◎", text: "Arrive at destination", short: "ARRIVE" });
-    return {
+    const route = {
       path, cum, maneuvers,
       stats: { dist, straight: distKm(state.start, state.end), gain, loss, maxSlope, etaH: dist / NAV_SETTINGS.speedKmh }
     };
+    route.stats.doseMSv = routeDose(route);
+    return route;
   }
 
   function describeTurn(delta) {
@@ -606,9 +822,15 @@ function initNav({ map, getView, MARS_SR, loadModules, craterLayer }) {
     $("hudEta").textContent = s ? fmtTime(s.etaH) : "--";
     $("hudGain").textContent = s ? `+${Math.round(s.gain)} / -${Math.round(s.loss)} m` : "--";
     $("hudSlope").textContent = s ? s.maxSlope.toFixed(1) + "°" : "--";
+    $("hudDose").textContent = s ? `${s.doseMSv.toFixed(3)} mSv` : "--";
+    if (!state.sim) $("hudRad").textContent = state.route ? `${radRate(state.route.path[0][2]).toFixed(2)} mSv/day` : "--";
     $("hudHazards").textContent = state.autoHazards.length
       ? `${state.hazards.length} + ${state.autoHazards.length} craters` : state.hazards.length;
     $("btnSim").disabled = !state.route;
+    $("btnExport").disabled = !state.route || !!state.route.stale;
+    $("routeInfo").textContent = state.route
+      ? `${state.route.stale ? "Outdated — recompute before exporting. " : ""}${fmtKm(state.route.stats.dist)} · ${state.route.path.length} points · ${state.route.maneuvers.length - 1} turns`
+      : "No route yet.";
     if (!state.sim) {
       const hd = state.route ? bearing(P(state.route.path[0]), P(state.route.path[Math.min(3, state.route.path.length - 1)]))
                : state.start && state.end ? bearing(state.start, state.end) : 0;
@@ -701,6 +923,20 @@ function initNav({ map, getView, MARS_SR, loadModules, craterLayer }) {
     requestAnimationFrame(step);
   }
 
+  // Vehicle position, heading and grade (next ~300 m) at a distance along the route
+  function poseAt(d) {
+    const { path, cum } = state.route;
+    let i = 1; while (i < cum.length - 1 && cum[i] < d) i++;
+    const f = (d - cum[i - 1]) / ((cum[i] - cum[i - 1]) || 1);
+    const a = path[i - 1], b = path[i];
+    const pos = { x: a[0] + (b[0] - a[0]) * f, y: a[1] + (b[1] - a[1]) * f, z: a[2] + (b[2] - a[2]) * f };
+    const heading = bearing(P(a), P(b));
+    let j = i; while (j < cum.length - 1 && cum[j] - d < 0.3) j++;
+    const ahead = Math.max(0.05, cum[j] - d);
+    const grade = Math.atan((path[j][2] - pos.z) / (ahead * 1000)) / toR;
+    return { pos, heading, grade };
+  }
+
   function step(now) {
     const sim = state.sim;
     if (!sim?.running || !state.route) return;
@@ -711,16 +947,7 @@ function initNav({ map, getView, MARS_SR, loadModules, craterLayer }) {
     sim.d = Math.min(total, sim.d + NAV_SETTINGS.speedKmh * NAV_SETTINGS.timeWarp * dtH);
     const d = sim.d, t = d / total;
 
-    let i = 1; while (i < cum.length - 1 && cum[i] < d) i++;
-    const f = (d - cum[i - 1]) / ((cum[i] - cum[i - 1]) || 1);
-    const a = path[i - 1], b = path[i];
-    const pos = { x: a[0] + (b[0] - a[0]) * f, y: a[1] + (b[1] - a[1]) * f, z: a[2] + (b[2] - a[2]) * f };
-    const heading = bearing(P(a), P(b));
-
-    // Grade over the next ~300 m (smoother than a single grid step)
-    let j = i; while (j < cum.length - 1 && cum[j] - d < 0.3) j++;
-    const ahead = Math.max(0.05, cum[j] - d);
-    const grade = Math.atan((path[j][2] - pos.z) / (ahead * 1000)) / toR;
+    const { pos, heading, grade } = poseAt(d);
 
     // Smoothed camera heading and pitch
     const k = NAV_SETTINGS.camSmoothing;
@@ -733,6 +960,7 @@ function initNav({ map, getView, MARS_SR, loadModules, craterLayer }) {
 
     Object.assign(sim, { pos, heading, smoothHeading, smoothTilt, t, grade });
     $("hudHeading").textContent = Math.round(heading) + "°";
+    $("hudRad").textContent = `${radRate(pos.z).toFixed(2)} mSv/day`;
     setCompass(heading, grade);
     updateGuidance(d);
     setProgress(t); drawProfile(); updateSimGraphic(); updateCamReadout();
@@ -890,7 +1118,11 @@ function initNav({ map, getView, MARS_SR, loadModules, craterLayer }) {
   }
   let saveTimer = null;
   function applySettings() {
-    if (state.route) state.route.stats.etaH = state.route.stats.dist / NAV_SETTINGS.speedKmh;
+    if (state.route) {
+      state.route.stats.etaH = state.route.stats.dist / NAV_SETTINGS.speedKmh;
+      state.route.stats.doseMSv = routeDose(state.route);   // slower = longer exposure
+      $("hudDose").textContent = `${state.route.stats.doseMSv.toFixed(3)} mSv`;
+    }
     updateCamReadout();
     if (!state.sim) updateHud(); else setProgress(state.sim.t);
     saveSettings();
