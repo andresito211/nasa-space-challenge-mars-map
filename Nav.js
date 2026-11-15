@@ -40,7 +40,16 @@ const NAV_SETTINGS = {
   radDoseRef: 0.67,      // mSv/day at the reference elevation
   radRefElevM: -4400,    // reference elevation (Gale Crater)
   radScaleHeightM: 11100,// Mars atmospheric scale height
-  radExponent: 0.35,     // how strongly dose follows pressure (dose ∝ pressure^−exponent)   // crater layer loads the visible area only when the view is narrower than this
+  radExponent: 0.35,     // how strongly dose follows pressure (dose ∝ pressure^−exponent)
+  // ---- time & environment checks (Mars clock + climate.json) ----
+  timeChecks: true,      // check every route point at its time of passage
+  roverMinTempC: -40,    // rover operating limits (set your rover's real values)
+  roverMaxTempC: 40,
+  tempUsesGround: false, // compare limits with ground temperature instead of air temperature
+  maxWindMs: 15,
+  maxDustTau: 1.5,       // dust opacity (0.4 clear … 1+ dusty … 3+ storm)
+  allowNightDriving: false,
+  minSunElevDeg: 3,
   minTurnDeg: 10,        // smaller direction changes are "continue straight" (no instruction)
   pathSmoothing: true,   // straighten the grid zigzag wherever the straight line is still safe
   simplifyCells: 0.5,    // bends smaller than this (in grid cells) don't become turn points
@@ -83,6 +92,15 @@ const NAV_SETTINGS_UI = [
   ["craterMaxKm", "Largest crater to avoid", 2, 50, 1, "km"],
   ["craterMargin", "Rim safety factor", 1, 1.6, 0.05, "×"],
   ["craterViewMaxDeg", "Crater layer: load when view narrower than", 2, 20, 1, "°"],
+  ["— TIME & ENVIRONMENT LIMITS —"],
+  ["timeChecks", "Check route against time of passage", "bool"],
+  ["roverMinTempC", "Rover minimum temperature", -100, 0, 1, "°C"],
+  ["roverMaxTempC", "Rover maximum temperature", 0, 80, 1, "°C"],
+  ["tempUsesGround", "Use ground (not air) temperature", "bool"],
+  ["maxWindMs", "Maximum wind", 3, 40, 1, "m/s"],
+  ["maxDustTau", "Maximum dust opacity", 0.2, 4, 0.1, "τ"],
+  ["allowNightDriving", "Allow driving in darkness", "bool"],
+  ["minSunElevDeg", "Minimum sun elevation (daylight)", -5, 20, 1, "°"],
   ["— RADIATION ESTIMATE —"],
   ["radDoseRef", "Dose at Gale Crater (RAD)", 0.1, 2, 0.01, "mSv/day"],
   ["radExponent", "Sensitivity to air column", 0, 1, 0.01, ""]
@@ -106,6 +124,8 @@ function initNav({ map, getView, MARS_SR, loadModules, craterLayer, getGazetteer
     start: null, end: null,
     hazards: [],          // manual + mission.geojson hazards: { x, y, radiusKm, name }
     autoHazards: [],      // hazards fetched online for the current route area (craters)
+    departure: null,      // null = leave now; otherwise a Date (UTC)
+    timeCheck: null,      // result of checking the route at its time of passage
     route: null,          // { path, cum, waypoints, maneuvers, stats }
     sim: null,
     follow: true,
@@ -275,6 +295,7 @@ function initNav({ map, getView, MARS_SR, loadModules, craterLayer, getGazetteer
     stopSim(); state.start = state.end = state.route = null;
     state.hazards = state.hazards.filter(h => h.fromFile);
     state.autoHazards = [];
+    state.timeCheck = null; showTimeCheck();
     craterLayer?.setBlocked([]);
     $("btnRoute").classList.remove("pulse"); $("btnRouteMenu").classList.remove("pulse");
     updateHud(); redraw(); status("Cleared");
@@ -325,6 +346,10 @@ function initNav({ map, getView, MARS_SR, loadModules, craterLayer, getGazetteer
                                                      no_go_radius_km: Math.round(h.radiusKm * 1000) / 1000 })),
       planning: Object.fromEntries(["maxSlopeDeg", "slopeWeight", "pathSmoothing", "minTurnDeg", "simplifyCells",
         "useCraters", "craterMinKm", "craterMaxKm", "craterMargin", "speedKmh"].map(k => [k, NAV_SETTINGS[k]])),
+      departure_utc: state.departure ? state.departure.toISOString() : null,
+      time_check: state.timeCheck ? { ok: state.timeCheck.ok, checked_for: state.timeCheck.dep.toISOString(),
+        first_problem: state.timeCheck.first ? { at_km: +state.timeCheck.first.km.toFixed(2), reasons: state.timeCheck.first.reasons } : null,
+        suggested_departure_utc: state.timeCheck.suggest ? state.timeCheck.suggest.toISOString() : null } : null,
       stats: { distance_km: +st.dist.toFixed(3), straight_km: +st.straight.toFixed(3), eta_h: +st.etaH.toFixed(3),
                gain_m: Math.round(st.gain), loss_m: Math.round(st.loss), max_slope_deg: +st.maxSlope.toFixed(2),
                dose_msv_est: +st.doseMSv.toFixed(4) },
@@ -382,6 +407,8 @@ function initNav({ map, getView, MARS_SR, loadModules, craterLayer, getGazetteer
           delta: m.turn_deg || 0, ...(m.turn_deg ? describeTurn(m.turn_deg) : {}),
           text: m.instruction, icon: m.icon, short: (m.instruction || "").toUpperCase() }));
       }
+      if (data.departure_utc) setDeparture(new Date(data.departure_utc));
+      refreshTimeCheck();
       $("btnRoute").classList.remove("pulse"); $("btnRouteMenu").classList.remove("pulse");
       updateHud(); redraw();
       if (!state.follow) showOverview();
@@ -487,6 +514,7 @@ function initNav({ map, getView, MARS_SR, loadModules, craterLayer, getGazetteer
         return;
       }
       state.route = buildRoute(result);
+      refreshTimeCheck();
       $("btnRoute").classList.remove("pulse"); $("btnRouteMenu").classList.remove("pulse");
       updateHud(); redraw();
       if (!state.follow) showOverview();
@@ -892,6 +920,12 @@ function initNav({ map, getView, MARS_SR, loadModules, craterLayer, getGazetteer
     ctx.fillStyle = "rgba(57,215,255,.15)"; ctx.fill();
     ctx.beginPath(); zs.forEach((v, i) => i ? ctx.lineTo(X(i), Y(v)) : ctx.moveTo(X(i), Y(v)));
     ctx.strokeStyle = "#39d7ff"; ctx.lineWidth = 1.5 * devicePixelRatio; ctx.stroke();
+    // red bands where the time & environment check fails
+    const bad = state.timeCheck?.bad;
+    if (bad) {
+      ctx.fillStyle = "rgba(255,80,80,.28)";
+      for (let i = 1; i < p.length; i++) if (bad[i] || bad[i - 1]) ctx.fillRect(X(i - 1), 0, Math.max(1, X(i) - X(i - 1)), h);
+    }
     if (state.sim) {
       const x = 5 + state.sim.t * (w - 10);
       ctx.strokeStyle = "#fff"; ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke();
@@ -900,6 +934,147 @@ function initNav({ map, getView, MARS_SR, loadModules, craterLayer, getGazetteer
     ctx.fillText(`${Math.round(zmax)} m`, 6, 12 * devicePixelRatio);
     ctx.fillText(`${Math.round(zmin)} m`, 6, h - 4);
   }
+
+  // ---------- TIME & ENVIRONMENT (Mars clock + climate table) ----------
+  // Each route point gets a time of passage = departure + distance ÷ speed. At that time
+  // and place the climate table gives typical temperature, wind and dust, and the Mars
+  // clock gives the sun elevation. Points outside the limits are flagged; if the route
+  // fails, other departure times (every 15 min over the next ~1.5 sols) are tried.
+  const depDate = () => state.departure || new Date();
+  const timeAtKm = (dep, km) => new Date(dep.getTime() + (km / NAV_SETTINGS.speedKmh) * 3600e3);
+  const fmtUTC = (d) => d.toISOString().slice(0, 16).replace("T", " ") + " UTC";
+
+  function checkAt(i, dep) {
+    const p = state.route.path[i];
+    const date = timeAtKm(dep, state.route.cum[i]);
+    const w = Climate.at(date, p[1], p[0], p[2]);
+    const reasons = [];
+    if (w) {
+      const T = NAV_SETTINGS.tempUsesGround ? w.ground_temp_C : w.air_temp_C;
+      if (T < NAV_SETTINGS.roverMinTempC) reasons.push(`too cold (${Math.round(T)} °C)`);
+      if (T > NAV_SETTINGS.roverMaxTempC) reasons.push(`too hot (${Math.round(T)} °C)`);
+      if (w.wind_ms > NAV_SETTINGS.maxWindMs) reasons.push(`wind ${w.wind_ms.toFixed(0)} m/s`);
+      if (w.dust_tau > NAV_SETTINGS.maxDustTau) reasons.push(`dust τ ${w.dust_tau.toFixed(1)}`);
+    }
+    const sun = w ? w.sunElev : MarsClock.marsTime(date, p[0], p[1]).sunElev;
+    if (!NAV_SETTINGS.allowNightDriving && sun < NAV_SETTINGS.minSunElevDeg) reasons.push("dark");
+    return { date, w, sun, reasons };
+  }
+
+  function evaluateRoute(dep) {
+    const n = state.route.path.length;
+    const bad = new Array(n).fill(false);
+    let first = null, minT = Infinity, maxT = -Infinity, maxWind = 0, maxTau = 0, darkKm = 0;
+    for (let i = 0; i < n; i++) {
+      const c = checkAt(i, dep);
+      if (c.w) {
+        const T = NAV_SETTINGS.tempUsesGround ? c.w.ground_temp_C : c.w.air_temp_C;
+        minT = Math.min(minT, T); maxT = Math.max(maxT, T);
+        maxWind = Math.max(maxWind, c.w.wind_ms); maxTau = Math.max(maxTau, c.w.dust_tau);
+      }
+      if (c.reasons.includes("dark") && i > 0) darkKm += state.route.cum[i] - state.route.cum[i - 1];
+      if (c.reasons.length) { bad[i] = true; if (!first) first = { i, km: state.route.cum[i], reasons: c.reasons, date: c.date }; }
+    }
+    return { ok: !first, first, bad, minT, maxT, maxWind, maxTau, darkKm,
+             arrive: timeAtKm(dep, state.route.stats.dist), dep };
+  }
+
+  const timeReady = () => typeof MarsClock !== "undefined" && typeof Climate !== "undefined";
+  function refreshTimeCheck() {
+    if (!timeReady()) return;
+    if (!state.route || !NAV_SETTINGS.timeChecks) { state.timeCheck = null; showTimeCheck(); drawProfile(); return; }
+    const dep = depDate();
+    const res = evaluateRoute(dep);
+    res.suggest = null;
+    if (!res.ok) {
+      for (let k = 1; k <= 150; k++) {                       // 15-min steps ≈ 1.5 sols
+        const d2 = new Date(dep.getTime() + k * 15 * 60e3);
+        if (evaluateRoute(d2).ok) { res.suggest = d2; break; }
+      }
+    }
+    state.timeCheck = res;
+    showTimeCheck(); drawProfile();
+  }
+
+  function showTimeCheck() {
+    if (!timeReady()) return;
+    const tc = state.timeCheck;
+    const dep = depDate();
+    const mt0 = state.route ? MarsClock.marsTime(dep, state.route.path[0][0], state.route.path[0][1]) : null;
+    $("depInfo").textContent = state.route
+      ? `Depart ${fmtUTC(dep)} · LTST ${MarsClock.hhmm(mt0.ltst)} → arrive ${fmtUTC(timeAtKm(dep, state.route.stats.dist))}`
+      : "";
+    $("btnUseSuggested").hidden = !tc?.suggest;
+    if (!tc) { $("wCheck").textContent = NAV_SETTINGS.timeChecks ? "--" : "OFF"; $("wCheck").className = "";
+               ["wRouteT", "wRouteWind", "wRouteDust", "wArrive"].forEach(id => $(id).textContent = "--"); return; }
+    const end = state.route.path[state.route.path.length - 1];
+    const mtA = MarsClock.marsTime(tc.arrive, end[0], end[1]);
+    $("wRouteT").textContent = Number.isFinite(tc.minT) ? `${Math.round(tc.minT)} … ${Math.round(tc.maxT)} °C` : "--";
+    $("wRouteWind").textContent = `${tc.maxWind.toFixed(1)} m/s`;
+    $("wRouteDust").textContent = tc.maxTau.toFixed(2);
+    $("wArrive").textContent = `LTST ${MarsClock.hhmm(mtA.ltst)}`;
+    if (tc.ok) {
+      $("wCheck").textContent = "✓ ROUTE OK FOR THIS DEPARTURE"; $("wCheck").className = "ok";
+    } else {
+      const f = tc.first;
+      const mt = MarsClock.marsTime(f.date, state.route.path[f.i][0], state.route.path[f.i][1]);
+      $("wCheck").textContent = `⚠ km ${f.km.toFixed(1)} at LTST ${MarsClock.hhmm(mt.ltst)}: ${f.reasons.join(", ")}`;
+      $("wCheck").className = "bad";
+    }
+    $("wSuggest").textContent = tc.ok ? "" : tc.suggest
+      ? `Earliest safe departure: ${fmtUTC(tc.suggest)} (LTST ${MarsClock.hhmm(MarsClock.marsTime(tc.suggest, state.route.path[0][0], state.route.path[0][1]).ltst)})`
+      : `No safe departure in the next 1.5 sols — the drive (${fmtTime(state.route.stats.etaH)}) may not fit one daylight window; split the route at a waypoint.`;
+    if (!tc.ok && !state.sim?.running) status(`Time check: ${$("wCheck").textContent.replace("⚠ ", "")}`);
+  }
+
+  // Conditions now at the vehicle (simulation) or at the start, shown in the WEATHER tab
+  function showWeatherNow() {
+    if (!timeReady()) return;
+    const simDate = state.sim && state.route ? timeAtKm(depDate(), state.sim.d || 0) : null;
+    const date = simDate || (state.route ? depDate() : new Date());
+    const at = state.sim?.pos || (state.start ? { ...state.start, z: state.route?.path[0][2] } : null);
+    // top-bar Mars clock (at the vehicle/start, or at the view center)
+    const v = getView();
+    const lon = at ? at.x : v?.center?.x ?? 0, lat = at ? at.y : v?.center?.y ?? 0;
+    const mt = MarsClock.marsTime(date, lon, lat);
+    $("marsClock").textContent = `${simDate ? "SIM " : ""}MY ${mt.my} · Ls ${mt.ls.toFixed(1)}° ${MarsClock.seasonName(mt.ls, lat)} · LTST ${MarsClock.hhmm(mt.ltst)}`;
+    $("marsClock").title = `Earth: ${fmtUTC(date)} · Mars Sol Date ${mt.msd.toFixed(2)} · LMST ${MarsClock.hhmm(mt.lmst)} at ${lon.toFixed(2)}°E`;
+    const w = Climate.at(date, lat, lon, at?.z ?? null);
+    const set = (id, t) => { $(id).textContent = t; };
+    set("wWhere", at ? (state.sim ? "vehicle" : "start") + ` · ${w ? w.site + (w.approximate ? " (approx.)" : "") : "no climate table"}` : "map center");
+    set("wTime", `LTST ${MarsClock.hhmm(mt.ltst)} · sun ${mt.sunElev.toFixed(0)}° · ☀ ${MarsClock.hhmm(mt.sunrise)}–${MarsClock.hhmm(mt.sunset)}`);
+    if (!w) { ["wAir", "wGround", "wPres", "wWind", "wDust", "wDevils"].forEach(id => set(id, "--")); return; }
+    set("wAir", `${w.air_temp_C.toFixed(0)} °C`);
+    set("wGround", `${w.ground_temp_C.toFixed(0)} °C`);
+    set("wPres", `${Math.round(w.pressure_Pa)} Pa`);
+    const dirs = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
+    set("wWind", `${w.wind_ms.toFixed(1)} m/s from ${dirs[Math.round(w.wind_from_deg / 45) % 8]}`);
+    set("wDust", `τ ${w.dust_tau.toFixed(2)}${w.dust_tau > 1 ? " (dusty)" : ""}`);
+    set("wDevils", w.dust_devil_index > 0.6 ? "HIGH" : w.dust_devil_index > 0.25 ? "moderate" : "low");
+  }
+
+  // departure controls (ROUTE panel)
+  const pad2 = (n) => String(n).padStart(2, "0");
+  const toInput = (d) => `${d.getUTCFullYear()}-${pad2(d.getUTCMonth() + 1)}-${pad2(d.getUTCDate())}T${pad2(d.getUTCHours())}:${pad2(d.getUTCMinutes())}`;
+  function setDeparture(d) {
+    state.departure = d;
+    $("depMode").value = d ? "custom" : "now";
+    $("depTime").disabled = !d;
+    $("depTime").value = toInput(d || new Date());
+    stopSim(); refreshTimeCheck(); showWeatherNow();
+  }
+  $("depMode").onchange = () => setDeparture($("depMode").value === "now" ? null : new Date($("depTime").value + ":00Z"));
+  $("depTime").onchange = () => { if ($("depMode").value === "custom") setDeparture(new Date($("depTime").value + ":00Z")); };
+  $("btnUseSuggested").onclick = () => { if (state.timeCheck?.suggest) setDeparture(state.timeCheck.suggest); };
+  $("depTime").value = toInput(new Date());
+  $("depTime").disabled = true;
+
+  // clock tick: top-bar clock every second; "leave now" checks refreshed every minute
+  let tick = 0;
+  setInterval(() => {
+    showWeatherNow();
+    if (++tick % 60 === 0 && !state.departure && state.route && !state.sim) refreshTimeCheck();
+  }, 1000);
 
   // ---------- drive simulation + follow camera ----------
   // Distance advances by speed × time warp, so speed changes apply immediately.
@@ -1124,6 +1299,7 @@ function initNav({ map, getView, MARS_SR, loadModules, craterLayer, getGazetteer
       $("hudDose").textContent = `${state.route.stats.doseMSv.toFixed(3)} mSv`;
     }
     updateCamReadout();
+    if (state.route && !state.sim?.running) refreshTimeCheck();
     if (!state.sim) updateHud(); else setProgress(state.sim.t);
     saveSettings();
   }
