@@ -1,11 +1,11 @@
-# Mars Navigation — astronaut / rover route planner (demo)
+# Rukbat Nav HUD
 
 A browser app that shows Mars as a 2D map or a 3D globe and plans drivable routes for an
 astronaut or rover: it avoids steep terrain, craters and hazard zones, gives Waze-style
 turn-by-turn guidance, simulates the drive, and checks the route against the time of day,
 temperature, wind, dust and darkness at the moment the vehicle passes each point.
 
-![HUD layout (illustration)](docs/hud-layout.svg)
+![HUD layout (illustration)](docs/hud-layout.png)
 
 *Illustration of the HUD layout. Add real screenshots to `docs/screenshots/` (see [Screenshots](#screenshots)).*
 
