@@ -32,7 +32,15 @@ const NAV_SETTINGS = {
   craterMaxKm: 8,        // craters up to this size are no-go zones; bigger ones (like Jezero)
                          // are left to the slope check, since their floors can be driven on
   craterMargin: 1.15,    // no-go radius = crater radius × this (covers the rim)
-  craterViewMaxDeg: 8,   // crater layer loads the visible area only when the view is narrower than this
+  craterViewMaxDeg: 8,
+  // ---- radiation estimate (galactic cosmic rays) ----
+  // Reference: Curiosity RAD, 0.67 mSv/day dose equivalent at Gale Crater (−4.4 km).
+  // Dose falls as the air column above grows, so it is scaled with surface pressure,
+  // which follows elevation: P ∝ exp(−h / scale height).
+  radDoseRef: 0.67,      // mSv/day at the reference elevation
+  radRefElevM: -4400,    // reference elevation (Gale Crater)
+  radScaleHeightM: 11100,// Mars atmospheric scale height
+  radExponent: 0.35,     // how strongly dose follows pressure (dose ∝ pressure^−exponent)   // crater layer loads the visible area only when the view is narrower than this
   minTurnDeg: 10,        // smaller direction changes are "continue straight" (no instruction)
   pathSmoothing: true,   // straighten the grid zigzag wherever the straight line is still safe
   simplifyCells: 0.5,    // bends smaller than this (in grid cells) don't become turn points
@@ -74,7 +82,10 @@ const NAV_SETTINGS_UI = [
   ["craterMinKm", "Smallest crater to avoid", 1, 10, 0.5, "km"],
   ["craterMaxKm", "Largest crater to avoid", 2, 50, 1, "km"],
   ["craterMargin", "Rim safety factor", 1, 1.6, 0.05, "×"],
-  ["craterViewMaxDeg", "Crater layer: load when view narrower than", 2, 20, 1, "°"]
+  ["craterViewMaxDeg", "Crater layer: load when view narrower than", 2, 20, 1, "°"],
+  ["— RADIATION ESTIMATE —"],
+  ["radDoseRef", "Dose at Gale Crater (RAD)", 0.1, 2, 0.01, "mSv/day"],
+  ["radExponent", "Sensitivity to air column", 0, 1, 0.01, ""]
 ];
 
 // Restore saved settings (browser storage may be unavailable: ignore then)
@@ -252,6 +263,19 @@ function initNav({ map, getView, MARS_SR, loadModules, craterLayer }) {
     return ring;
   };
   const P = (a) => ({ x: a[0], y: a[1] });
+
+  // Estimated radiation dose rate (mSv/day) at an elevation in meters
+  const radRate = (zM) => NAV_SETTINGS.radDoseRef *
+    Math.exp(NAV_SETTINGS.radExponent * (zM - NAV_SETTINGS.radRefElevM) / NAV_SETTINGS.radScaleHeightM);
+  // Estimated dose (mSv) received while driving the route at the set speed
+  function routeDose(route) {
+    let dose = 0;
+    for (let i = 1; i < route.path.length; i++) {
+      const hours = (route.cum[i] - route.cum[i - 1]) / NAV_SETTINGS.speedKmh;
+      dose += (hours / 24) * radRate((route.path[i][2] + route.path[i - 1][2]) / 2);
+    }
+    return dose;
+  }
 
   // ---------- route planning ----------
   async function computeRoute() {
@@ -497,10 +521,12 @@ function initNav({ map, getView, MARS_SR, loadModules, craterLayer }) {
       maneuvers.push({ i: wIdx[k], at: cum[wIdx[k]], delta, ...describeTurn(delta) });
     }
     maneuvers.push({ i: path.length - 1, at: dist, delta: 0, icon: "◎", text: "Arrive at destination", short: "ARRIVE" });
-    return {
+    const route = {
       path, cum, maneuvers,
       stats: { dist, straight: distKm(state.start, state.end), gain, loss, maxSlope, etaH: dist / NAV_SETTINGS.speedKmh }
     };
+    route.stats.doseMSv = routeDose(route);
+    return route;
   }
 
   function describeTurn(delta) {
@@ -606,6 +632,8 @@ function initNav({ map, getView, MARS_SR, loadModules, craterLayer }) {
     $("hudEta").textContent = s ? fmtTime(s.etaH) : "--";
     $("hudGain").textContent = s ? `+${Math.round(s.gain)} / -${Math.round(s.loss)} m` : "--";
     $("hudSlope").textContent = s ? s.maxSlope.toFixed(1) + "°" : "--";
+    $("hudDose").textContent = s ? `${s.doseMSv.toFixed(3)} mSv` : "--";
+    if (!state.sim) $("hudRad").textContent = state.route ? `${radRate(state.route.path[0][2]).toFixed(2)} mSv/day` : "--";
     $("hudHazards").textContent = state.autoHazards.length
       ? `${state.hazards.length} + ${state.autoHazards.length} craters` : state.hazards.length;
     $("btnSim").disabled = !state.route;
@@ -733,6 +761,7 @@ function initNav({ map, getView, MARS_SR, loadModules, craterLayer }) {
 
     Object.assign(sim, { pos, heading, smoothHeading, smoothTilt, t, grade });
     $("hudHeading").textContent = Math.round(heading) + "°";
+    $("hudRad").textContent = `${radRate(pos.z).toFixed(2)} mSv/day`;
     setCompass(heading, grade);
     updateGuidance(d);
     setProgress(t); drawProfile(); updateSimGraphic(); updateCamReadout();
@@ -890,7 +919,11 @@ function initNav({ map, getView, MARS_SR, loadModules, craterLayer }) {
   }
   let saveTimer = null;
   function applySettings() {
-    if (state.route) state.route.stats.etaH = state.route.stats.dist / NAV_SETTINGS.speedKmh;
+    if (state.route) {
+      state.route.stats.etaH = state.route.stats.dist / NAV_SETTINGS.speedKmh;
+      state.route.stats.doseMSv = routeDose(state.route);   // slower = longer exposure
+      $("hudDose").textContent = `${state.route.stats.doseMSv.toFixed(3)} mSv`;
+    }
     updateCamReadout();
     if (!state.sim) updateHud(); else setProgress(state.sim.t);
     saveSettings();

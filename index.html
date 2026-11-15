@@ -247,6 +247,8 @@
         <div class="row"><span>ELEV +/-</span><span id="hudGain">--</span></div>
         <div class="row"><span>MAX SLOPE</span><span id="hudSlope">--</span></div>
         <div class="row"><span>HEADING</span><span id="hudHeading">--</span></div>
+        <div class="row"><span>RADIATION (EST.)</span><span id="hudRad">--</span></div>
+        <div class="row"><span>ROUTE DOSE (EST.)</span><span id="hudDose">--</span></div>
         <div class="row"><span>SPEED</span><span id="hudSpeed">--</span></div>
         <div class="row"><span>POV HEIGHT · PITCH</span><span id="hudCam">--</span></div>
         <div class="row"><span>HAZARDS</span><span id="hudHazards">0</span></div>
@@ -281,6 +283,7 @@
       btn.title = c ? "Restore" : "Minimize";
     });
   </script>
+  <script src="science.js"></script>
   <script src="craters.js"></script>
   <script src="nav.js"></script>
   <script>
@@ -341,13 +344,9 @@
       })] }
     });
 
-    // NASA Mars Trek: MOLA global surface roughness (see addTrekLayer below)
-    await addTrekLayer(map, {
-      id: "mola_roughness",
-      title: "MOLA surface roughness (NASA Trek)",
-      opacity: 0.7,
-      visible: true
-    });
+    // Science layers from NASA Mars Trek (minerals, dust, thermal, roughness) — see science.js
+    try { await initScienceLayers({ map, basemapLayer, loadModules }); }
+    catch (err) { console.error("Science layers unavailable:", err); }
 
     // Georeferenced data: feature names, landing sites and your own mission points
     await addGeoData(map);
