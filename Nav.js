@@ -95,7 +95,8 @@ function initNav({ map, getView, MARS_SR, loadModules }) {
     autoHazards: [],      // hazards fetched online for the current route area (craters)
     route: null,          // { path, cum, waypoints, maneuvers, stats }
     sim: null,
-    follow: true
+    follow: true,
+    track: false          // overview mode: keep the vehicle centered
   };
 
   let GraphicsLayer, Graphic, Multipoint, Camera, layer, elevation;
@@ -124,21 +125,35 @@ function initNav({ map, getView, MARS_SR, loadModules }) {
   $("btnHazard").onclick = () => setMode("hazard");
   $("btnRoute").onclick = () => computeRoute();
   $("btnSim").onclick = () => toggleSimulation();
-  // Camera mode: FOLLOW CAM (Waze-like, behind the vehicle) or ROUTE OVERVIEW (whole route on screen)
+  // Camera modes:
+  //  FOLLOW CAM      Waze-like, behind the vehicle, heading-up
+  //  ROUTE OVERVIEW  straight down, north-up, with two options:
+  //     ⛶ FIT ROUTE      zoom so the whole route fits between the HUD panels (also done on entering)
+  //     ⌖ TRACK VEHICLE  keep the vehicle centered while driving, at whatever zoom you choose
   function setCamMode(mode) {
     state.follow = mode === "follow";
     $("btnFollow").classList.toggle("active", state.follow);
     $("btnOverview").classList.toggle("active", !state.follow);
+  $("overviewOpts").hidden = state.follow;
+    $("overviewOpts").hidden = state.follow;
     const v = getView();
     if (!v) return;
+    v.padding = { top: 0, left: 0, right: 0, bottom: 0 };
     if (state.follow) {
-      v.padding = { top: 0, left: 0, right: 0, bottom: 0 };
       if (state.sim?.pos) followCamera(state.sim.pos, state.sim.smoothHeading ?? state.sim.heading,
                                        state.sim.smoothTilt ?? NAV_SETTINGS.camTiltBase, state.sim.grade || 0);
+    } else if (state.track && (state.sim?.pos || state.start)) {
+      trackVehicle(state.sim?.pos || state.start, true);
     } else {
       showOverview();
     }
   }
+  $("btnFit").onclick = () => { state.track = false; $("btnTrack").classList.remove("active"); showOverview(); };
+  $("btnTrack").onclick = () => {
+    state.track = !state.track;
+    $("btnTrack").classList.toggle("active", state.track);
+    if (state.track) trackVehicle(state.sim?.pos || state.start, true);
+  };
   $("btnFollow").onclick = () => setCamMode("follow");
   $("btnOverview").onclick = () => setCamMode("overview");
   $("btnFollow").classList.toggle("active", state.follow);
@@ -736,6 +751,7 @@ function initNav({ map, getView, MARS_SR, loadModules }) {
     updateGuidance(d);
     setProgress(t); drawProfile(); updateSimGraphic(); updateCamReadout();
     if (state.follow) followCamera(pos, smoothHeading, smoothTilt, grade);
+    else if (state.track) trackVehicle(pos);
 
     if (d < total) requestAnimationFrame(step);
     else {
@@ -754,33 +770,75 @@ function initNav({ map, getView, MARS_SR, loadModules }) {
     $("hudCam").textContent = `${Math.round(camAltitude())} m · ${Math.round(tilt)}°`;
   }
 
-  // Route overview: north-up, looking straight down, route (+ start/end) fitted between the HUD panels
-  function showOverview() {
-    const view = getView();
-    if (!view || !view.ready) return;
-    const pts = state.route ? state.route.path.map(p => [p[0], p[1]])
-              : [state.start, state.end].filter(Boolean).map(p => [p.x, p.y]);
-    if (!pts.length) return;
-    // keep the route clear of the HUD panels
-    const box = (id) => { const el = document.getElementById(id); return el && !el.hidden ? el.getBoundingClientRect() : null; };
+  // Free screen area between the HUD panels, in pixels from each edge of the map
+  function hudPadding(view) {
     const vr = view.container.getBoundingClientRect();
+    const box = (id) => { const el = document.getElementById(id); return el && !el.hidden ? el.getBoundingClientRect() : null; };
     const L = box("left"), R = box("right"), T = box("guidance") || box("topbar"), B = box("bottom");
-    view.padding = {
+    let pad = {
       left: L ? Math.max(0, L.right - vr.left) + 20 : 40,
       right: R ? Math.max(0, vr.right - R.left) + 20 : 40,
       top: T ? Math.max(0, T.bottom - vr.top) + 20 : 40,
       bottom: B ? Math.max(0, vr.bottom - B.top) + 20 : 40
     };
-    // never let the panels eat more than 70 % of the screen (small windows, minimized panels)
-    const fit = (p1, p2, size) => { const k = Math.min(1, (0.7 * size) / Math.max(1, view.padding[p1] + view.padding[p2]));
-      view.padding = { ...view.padding, [p1]: view.padding[p1] * k, [p2]: view.padding[p2] * k }; };
-    fit("left", "right", vr.width); fit("top", "bottom", vr.height);
+    // never let the panels take more than 70 % of the screen (small windows)
+    const kx = Math.min(1, 0.7 * vr.width / Math.max(1, pad.left + pad.right));
+    const ky = Math.min(1, 0.7 * vr.height / Math.max(1, pad.top + pad.bottom));
+    return { W: vr.width, H: vr.height, left: pad.left * kx, right: pad.right * kx, top: pad.top * ky, bottom: pad.bottom * ky };
+  }
+
+  // Route overview: straight down, north-up, the route (or start/end) fitted between the panels.
+  // The camera is computed directly (zoom from the route size, center shifted for the panels),
+  // which works the same in 2D and 3D.
+  function showOverview() {
+    const view = getView();
+    if (!view || !view.ready) return;
+    const pts = state.route ? state.route.path
+              : [state.start, state.end].filter(Boolean).map(p => [p.x, p.y, 0]);
+    if (!pts.length) { status("Nothing to fit yet — set a start and destination"); return; }
     const xs = pts.map(p => p[0]), ys = pts.map(p => p[1]);
-    const pad = Math.max(0.01, 0.05 * Math.max(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys)));
-    const target = { type: "extent", xmin: Math.min(...xs) - pad, xmax: Math.max(...xs) + pad,
-                     ymin: Math.min(...ys) - pad, ymax: Math.max(...ys) + pad, spatialReference: MARS_SR };
-    const goal = view.type === "3d" ? { target, heading: 0, tilt: 0 } : { target, rotation: 0 };
-    view.goTo(goal, { duration: 1200 }).catch(() => {});
+    const cx = (Math.min(...xs) + Math.max(...xs)) / 2, cy = (Math.min(...ys) + Math.max(...ys)) / 2;
+    const spanXm = Math.max(500, (Math.max(...xs) - Math.min(...xs)) * KM_PER_DEG * Math.cos(cy * toR) * 1000);
+    const spanYm = Math.max(500, (Math.max(...ys) - Math.min(...ys)) * KM_PER_DEG * 1000);
+    const pad = hudPadding(view);
+    const availW = Math.max(100, pad.W - pad.left - pad.right), availH = Math.max(100, pad.H - pad.top - pad.bottom);
+    const mPerPx = Math.max(spanXm / availW, spanYm / availH) * 1.15;          // 15 % margin
+    // move the camera so the route's center lands in the middle of the free area
+    const shiftE = -((pad.left - pad.right) / 2) * mPerPx / 1000;              // km east
+    const shiftN = ((pad.top - pad.bottom) / 2) * mPerPx / 1000;               // km north
+    const c = offset(offset({ x: cx, y: cy }, 90, shiftE), 0, shiftN);
+    const zMean = pts.reduce((s, p) => s + (p[2] || 0), 0) / pts.length;
+
+    if (view.type === "3d") {
+      const fov = (view.camera?.fov || 55) * toR;                              // camera field of view
+      const alt = (Math.max(pad.W, pad.H) / 2) * mPerPx / Math.tan(fov / 2);
+      view.goTo(new Camera({
+        position: { type: "point", x: c.x, y: c.y, z: zMean + alt, spatialReference: MARS_SR },
+        heading: 0, tilt: 0
+      }), { duration: 1200 }).catch(() => {});
+    } else {
+      view.goTo({ center: { type: "point", x: c.x, y: c.y, spatialReference: MARS_SR },
+                  scale: mPerPx * 96 / 0.0254, rotation: 0 }, { duration: 1200 }).catch(() => {});
+    }
+  }
+
+  // Overview + TRACK: keep the vehicle centered, north-up, straight down, keeping the user's zoom
+  function trackVehicle(pos, animate = false) {
+    const view = getView();
+    if (!view || !view.ready || !pos) return;
+    const z = pos.z ?? 0;
+    if (view.type === "3d") {
+      const cur = view.camera;
+      // current height above the vehicle = the zoom the user picked (mouse wheel still works)
+      const h = cur && cur.tilt < 5 ? Math.max(300, cur.position.z - z) : 15000;
+      const cam = new Camera({ position: { type: "point", x: pos.x, y: pos.y, z: z + h, spatialReference: MARS_SR },
+                               heading: 0, tilt: 0 });
+      if (animate) view.goTo(cam, { duration: 800 }).catch(() => {}); else view.camera = cam;
+    } else {
+      const center = { type: "point", x: pos.x, y: pos.y, spatialReference: MARS_SR };
+      if (animate) view.goTo({ center, rotation: 0 }, { duration: 800 }).catch(() => {});
+      else { view.center = center; if (view.rotation) view.rotation = 0; }
+    }
   }
 
   // Waze-style camera: 3D = behind and above the vehicle looking forward; 2D = heading-up.

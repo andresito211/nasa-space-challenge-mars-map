@@ -84,6 +84,9 @@
     .set-row input[type=range] { grid-column: 1 / 3; width: 100%; accent-color: var(--c); }
     .set-row.bool { grid-template-columns: 1fr auto auto; align-items: center; }
     .set-row.bool input { grid-column: auto; accent-color: var(--c); width: 16px; height: 16px; }
+    .subrow { display: flex; gap: 4px; margin: -2px 0 4px 12px; border-left: 2px solid rgba(57,215,255,.4); padding-left: 6px; }
+    .subrow[hidden] { display: none; }
+    .btn.mini { margin: 2px 0; padding: 4px 6px; font-size: 10px; text-align: center; }
     /* COMPUTE ROUTE blinks when the route is outdated */
     @keyframes pulse { 0%, 100% { box-shadow: 0 0 0 rgba(255,179,71,0); } 50% { box-shadow: 0 0 12px rgba(255,179,71,.9); } }
     .btn.pulse { border-color: #ffb347; color: #ffd27a; animation: pulse 1.2s infinite; }
@@ -219,6 +222,10 @@
     <button id="btnSim" class="btn" disabled>▶ SIMULATE</button>
     <button id="btnFollow" class="btn">◉ FOLLOW CAM</button>
     <button id="btnOverview" class="btn">⛶ ROUTE OVERVIEW</button>
+    <div id="overviewOpts" class="subrow" hidden>
+      <button id="btnFit" class="btn mini" title="Zoom so the whole route fits on screen">⛶ FIT ROUTE</button>
+      <button id="btnTrack" class="btn mini" title="Keep the vehicle centered">⌖ TRACK</button>
+    </div>
     <button id="btnClear" class="btn">✕ CLEAR</button>
     <div id="navStatus">Ready</div>
     </div>
