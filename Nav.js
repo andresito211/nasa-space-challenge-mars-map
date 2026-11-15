@@ -32,7 +32,7 @@ const NAV_SETTINGS = {
   craterMaxKm: 8,        // craters up to this size are no-go zones; bigger ones (like Jezero)
                          // are left to the slope check, since their floors can be driven on
   craterMargin: 1.15,    // no-go radius = crater radius × this (covers the rim)
-  minTurnDeg: 20,        // smaller direction changes are "continue straight" (no instruction)
+  minTurnDeg: 10,        // smaller direction changes are "continue straight" (no instruction)
   pathSmoothing: true,   // straighten the grid zigzag wherever the straight line is still safe
   simplifyCells: 0.5,    // bends smaller than this (in grid cells) don't become turn points
   // ---- simulation + camera (editable in the ⚙ SETTINGS panel, saved in the browser) ----
@@ -77,7 +77,15 @@ const NAV_SETTINGS_UI = [
 
 // Restore saved settings (browser storage may be unavailable: ignore then)
 const NAV_DEFAULTS = { ...NAV_SETTINGS };
-try { Object.assign(NAV_SETTINGS, JSON.parse(localStorage.getItem("marsNavSettings") || "{}")); } catch (e) {}
+// Saved settings carry a version; when a default changes, older saved values of it are dropped.
+const NAV_SETTINGS_VERSION = 2;
+const CHANGED_DEFAULTS = { 2: ["minTurnDeg"] };
+try {
+  const saved = JSON.parse(localStorage.getItem("marsNavSettings") || "{}");
+  for (let v = (saved._v || 1) + 1; v <= NAV_SETTINGS_VERSION; v++) (CHANGED_DEFAULTS[v] || []).forEach(k => delete saved[k]);
+  delete saved._v;
+  Object.assign(NAV_SETTINGS, saved);
+} catch (e) {}
 
 function initNav({ map, getView, MARS_SR, loadModules }) {
   const state = {
@@ -116,11 +124,25 @@ function initNav({ map, getView, MARS_SR, loadModules }) {
   $("btnHazard").onclick = () => setMode("hazard");
   $("btnRoute").onclick = () => computeRoute();
   $("btnSim").onclick = () => toggleSimulation();
-  $("btnFollow").onclick = () => {
-    state.follow = !state.follow;
+  // Camera mode: FOLLOW CAM (Waze-like, behind the vehicle) or ROUTE OVERVIEW (whole route on screen)
+  function setCamMode(mode) {
+    state.follow = mode === "follow";
     $("btnFollow").classList.toggle("active", state.follow);
-  };
+    $("btnOverview").classList.toggle("active", !state.follow);
+    const v = getView();
+    if (!v) return;
+    if (state.follow) {
+      v.padding = { top: 0, left: 0, right: 0, bottom: 0 };
+      if (state.sim?.pos) followCamera(state.sim.pos, state.sim.smoothHeading ?? state.sim.heading,
+                                       state.sim.smoothTilt ?? NAV_SETTINGS.camTiltBase, state.sim.grade || 0);
+    } else {
+      showOverview();
+    }
+  }
+  $("btnFollow").onclick = () => setCamMode("follow");
+  $("btnOverview").onclick = () => setCamMode("overview");
   $("btnFollow").classList.toggle("active", state.follow);
+  $("btnOverview").classList.toggle("active", !state.follow);
   const showAuto = () => {
     $("btnAuto").textContent = `↻ AUTO RECOMPUTE: ${NAV_SETTINGS.autoRecompute ? "ON" : "OFF"}`;
     $("btnAuto").classList.toggle("active", NAV_SETTINGS.autoRecompute);
@@ -234,6 +256,7 @@ function initNav({ map, getView, MARS_SR, loadModules }) {
       state.route = buildRoute(result);
       $("btnRoute").classList.remove("pulse");
       updateHud(); redraw();
+      if (!state.follow) showOverview();
       const avoided = [...state.hazards, ...state.autoHazards].filter(h => h.nearRoute).length;
       status(`Route ready · ${state.route.maneuvers.length - 1} turns · ${avoided} hazard zone(s) near the route avoided` +
              (state.autoHazards.length ? ` · ${state.autoHazards.length} crater(s) checked` : ""));
@@ -731,6 +754,35 @@ function initNav({ map, getView, MARS_SR, loadModules }) {
     $("hudCam").textContent = `${Math.round(camAltitude())} m · ${Math.round(tilt)}°`;
   }
 
+  // Route overview: north-up, looking straight down, route (+ start/end) fitted between the HUD panels
+  function showOverview() {
+    const view = getView();
+    if (!view || !view.ready) return;
+    const pts = state.route ? state.route.path.map(p => [p[0], p[1]])
+              : [state.start, state.end].filter(Boolean).map(p => [p.x, p.y]);
+    if (!pts.length) return;
+    // keep the route clear of the HUD panels
+    const box = (id) => { const el = document.getElementById(id); return el && !el.hidden ? el.getBoundingClientRect() : null; };
+    const vr = view.container.getBoundingClientRect();
+    const L = box("left"), R = box("right"), T = box("guidance") || box("topbar"), B = box("bottom");
+    view.padding = {
+      left: L ? Math.max(0, L.right - vr.left) + 20 : 40,
+      right: R ? Math.max(0, vr.right - R.left) + 20 : 40,
+      top: T ? Math.max(0, T.bottom - vr.top) + 20 : 40,
+      bottom: B ? Math.max(0, vr.bottom - B.top) + 20 : 40
+    };
+    // never let the panels eat more than 70 % of the screen (small windows, minimized panels)
+    const fit = (p1, p2, size) => { const k = Math.min(1, (0.7 * size) / Math.max(1, view.padding[p1] + view.padding[p2]));
+      view.padding = { ...view.padding, [p1]: view.padding[p1] * k, [p2]: view.padding[p2] * k }; };
+    fit("left", "right", vr.width); fit("top", "bottom", vr.height);
+    const xs = pts.map(p => p[0]), ys = pts.map(p => p[1]);
+    const pad = Math.max(0.01, 0.05 * Math.max(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys)));
+    const target = { type: "extent", xmin: Math.min(...xs) - pad, xmax: Math.max(...xs) + pad,
+                     ymin: Math.min(...ys) - pad, ymax: Math.max(...ys) + pad, spatialReference: MARS_SR };
+    const goal = view.type === "3d" ? { target, heading: 0, tilt: 0 } : { target, rotation: 0 };
+    view.goTo(goal, { duration: 1200 }).catch(() => {});
+  }
+
   // Waze-style camera: 3D = behind and above the vehicle looking forward; 2D = heading-up.
   function followCamera(pos, heading, tilt, grade) {
     const view = getView();
@@ -801,7 +853,7 @@ function initNav({ map, getView, MARS_SR, loadModules }) {
   }
   function saveSettings() {
     clearTimeout(saveTimer);
-    saveTimer = setTimeout(() => { try { localStorage.setItem("marsNavSettings", JSON.stringify(NAV_SETTINGS)); } catch (e) {} }, 300);
+    saveTimer = setTimeout(() => { try { localStorage.setItem("marsNavSettings", JSON.stringify({ ...NAV_SETTINGS, _v: NAV_SETTINGS_VERSION })); } catch (e) {} }, 300);
   }
   $("btnSettings").onclick = () => { $("settings").hidden = !$("settings").hidden; };
   $("btnSettingsClose").onclick = () => { $("settings").hidden = true; };
