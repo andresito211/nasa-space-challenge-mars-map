@@ -82,6 +82,11 @@
     .set-row span:first-child { color: rgba(159,233,255,.75); }
     .set-val { color: #fff; }
     .set-row input[type=range] { grid-column: 1 / 3; width: 100%; accent-color: var(--c); }
+    .set-row.bool { grid-template-columns: 1fr auto auto; align-items: center; }
+    .set-row.bool input { grid-column: auto; accent-color: var(--c); width: 16px; height: 16px; }
+    /* COMPUTE ROUTE blinks when the route is outdated */
+    @keyframes pulse { 0%, 100% { box-shadow: 0 0 0 rgba(255,179,71,0); } 50% { box-shadow: 0 0 12px rgba(255,179,71,.9); } }
+    .btn.pulse { border-color: #ffb347; color: #ffd27a; animation: pulse 1.2s infinite; }
     .set-note { margin-top: 8px; font-size: 10px; color: rgba(159,233,255,.6); }
 
     /* turn-by-turn banner */
@@ -187,6 +192,7 @@
         <option value="3">3 km</option><option value="5">5 km</option><option value="10">10 km</option>
       </select></div>
     <button id="btnRoute" class="btn">⟲ COMPUTE ROUTE</button>
+    <button id="btnAuto" class="btn">↻ AUTO RECOMPUTE: OFF</button>
     <button id="btnSim" class="btn" disabled>▶ SIMULATE</button>
     <button id="btnFollow" class="btn">◉ FOLLOW CAM</button>
     <button id="btnClear" class="btn">✕ CLEAR</button>
