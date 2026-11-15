@@ -32,7 +32,7 @@
     #topbar .stripes { width: 60px; height: 6px; background: repeating-linear-gradient(-45deg, var(--c) 0 4px, transparent 4px 8px); opacity: .7; }
     #coords { color: var(--c2); min-width: 280px; }
 
-    #left  { top: 130px; left: 60px; width: 200px; max-height: calc(100% - 260px); overflow: auto; }
+    #left  { top: 130px; left: 60px; width: 200px; max-height: calc(100% - 260px); overflow-y: auto; overflow-x: hidden; }
     #right { top: 130px; right: 60px; width: 230px; }
     #bottom { left: 60px; right: 60px; bottom: 28px; display: flex; gap: 16px; align-items: stretch; }
 
@@ -82,6 +82,14 @@
     .set-row span:first-child { color: rgba(159,233,255,.75); }
     .set-val { color: #fff; }
     .set-row input[type=range] { grid-column: 1 / 3; width: 100%; accent-color: var(--c); }
+    .set-row.bool { grid-template-columns: 1fr auto auto; align-items: center; }
+    .set-row.bool input { grid-column: auto; accent-color: var(--c); width: 16px; height: 16px; }
+    .subrow { display: flex; gap: 4px; margin: -2px 0 4px 12px; border-left: 2px solid rgba(57,215,255,.4); padding-left: 6px; }
+    .subrow[hidden] { display: none; }
+    .btn.mini { margin: 2px 0; padding: 4px 6px; font-size: 10px; text-align: center; }
+    /* COMPUTE ROUTE blinks when the route is outdated */
+    @keyframes pulse { 0%, 100% { box-shadow: 0 0 0 rgba(255,179,71,0); } 50% { box-shadow: 0 0 12px rgba(255,179,71,.9); } }
+    .btn.pulse { border-color: #ffb347; color: #ffd27a; animation: pulse 1.2s infinite; }
     .set-note { margin-top: 8px; font-size: 10px; color: rgba(159,233,255,.6); }
 
     /* turn-by-turn banner */
@@ -140,6 +148,29 @@
       background: transparent !important; background-color: transparent !important; color: inherit;
     }
 
+    /* ---------- neon scrollbars (all HUD panels) ---------- */
+    .panel, .panel * { scrollbar-width: thin; scrollbar-color: var(--c) rgba(57,215,255,.08); }   /* Firefox */
+    .panel ::-webkit-scrollbar, .panel::-webkit-scrollbar { width: 6px; height: 6px; }
+    .panel ::-webkit-scrollbar-track, .panel::-webkit-scrollbar-track {
+      background: rgba(57,215,255,.06); border-left: 1px solid rgba(57,215,255,.2); }
+    .panel ::-webkit-scrollbar-thumb, .panel::-webkit-scrollbar-thumb {
+      background: linear-gradient(180deg, #9fe9ff, #39d7ff); border-radius: 3px; box-shadow: 0 0 6px #39d7ff; }
+    .panel ::-webkit-scrollbar-thumb:hover, .panel::-webkit-scrollbar-thumb:hover { background: #e8fbff; }
+    .panel ::-webkit-scrollbar-corner, .panel::-webkit-scrollbar-corner,
+    .panel ::-webkit-scrollbar-button, .panel::-webkit-scrollbar-button { display: none; background: transparent; }
+    .panel { overflow-x: hidden; }
+
+    /* ---------- neon range sliders (settings) ---------- */
+    .panel input[type=range] { -webkit-appearance: none; appearance: none; height: 16px; background: transparent; }
+    .panel input[type=range]::-webkit-slider-runnable-track { height: 4px; background: rgba(57,215,255,.25);
+      border: 1px solid rgba(57,215,255,.5); border-radius: 2px; }
+    .panel input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 12px; height: 12px; margin-top: -5px;
+      border-radius: 50%; background: #e8fbff; border: 2px solid var(--c); box-shadow: 0 0 8px var(--c); }
+    .panel input[type=range]::-moz-range-track { height: 4px; background: rgba(57,215,255,.25); border: 1px solid rgba(57,215,255,.5); }
+    .panel input[type=range]::-moz-range-progress { height: 4px; background: var(--c); }
+    .panel input[type=range]::-moz-range-thumb { width: 10px; height: 10px; border-radius: 50%; background: #e8fbff;
+      border: 2px solid var(--c); box-shadow: 0 0 8px var(--c); }
+
     /* subtle scan-line overlay on the whole map */
     #scan { position: absolute; inset: 0; pointer-events: none; z-index: 4;
       background: repeating-linear-gradient(0deg, rgba(57,215,255,.035) 0 1px, transparent 1px 3px); }
@@ -187,8 +218,14 @@
         <option value="3">3 km</option><option value="5">5 km</option><option value="10">10 km</option>
       </select></div>
     <button id="btnRoute" class="btn">⟲ COMPUTE ROUTE</button>
+    <button id="btnAuto" class="btn">↻ AUTO RECOMPUTE: OFF</button>
     <button id="btnSim" class="btn" disabled>▶ SIMULATE</button>
     <button id="btnFollow" class="btn">◉ FOLLOW CAM</button>
+    <button id="btnOverview" class="btn">⛶ ROUTE OVERVIEW</button>
+    <div id="overviewOpts" class="subrow" hidden>
+      <button id="btnFit" class="btn mini" title="Zoom so the whole route fits on screen">⛶ FIT ROUTE</button>
+      <button id="btnTrack" class="btn mini" title="Keep the vehicle centered">⌖ TRACK</button>
+    </div>
     <button id="btnClear" class="btn">✕ CLEAR</button>
     <div id="navStatus">Ready</div>
     </div>

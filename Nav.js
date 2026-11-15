@@ -25,7 +25,16 @@ const NAV_SETTINGS = {
   maxSlopeDeg: 20,       // steeper than this = impassable
   slopeWeight: 0.15,     // extra cost per degree of slope
   hazardRadiusKm: 2,     // default radius for new hazards (changed from the panel)
-  minTurnDeg: 20,        // smaller direction changes are "continue straight"
+  autoRecompute: false,  // re-plan by itself when start/end/hazards change (button in the panel)
+  // ---- online hazard data, fetched only for the area of the route being planned ----
+  useCraters: true,      // USGS Robbins crater database (craters ≥ 1 km)
+  craterMinKm: 1,        // ignore craters smaller than this
+  craterMaxKm: 8,        // craters up to this size are no-go zones; bigger ones (like Jezero)
+                         // are left to the slope check, since their floors can be driven on
+  craterMargin: 1.15,    // no-go radius = crater radius × this (covers the rim)
+  minTurnDeg: 10,        // smaller direction changes are "continue straight" (no instruction)
+  pathSmoothing: true,   // straighten the grid zigzag wherever the straight line is still safe
+  simplifyCells: 0.5,    // bends smaller than this (in grid cells) don't become turn points
   // ---- simulation + camera (editable in the ⚙ SETTINGS panel, saved in the browser) ----
   speedKmh: 8,           // vehicle speed; also used for ETA
   timeWarp: 60,          // simulation runs this many times faster than real time
@@ -52,23 +61,42 @@ const NAV_SETTINGS_UI = [
   ["camTiltMin", "Minimum pitch", 10, 85, 1, "°"],
   ["camTiltMax", "Maximum pitch", 30, 89, 1, "°"],
   ["camSmoothing", "Camera responsiveness", 0.02, 0.5, 0.01, ""],
+  ["— TURN GUIDANCE —"],
+  ["pathSmoothing", "Straighten path (remove grid zigzag)", "bool"],
+  ["minTurnDeg", "Minimum angle for an instruction", 5, 60, 1, "°"],
+  ["simplifyCells", "Ignore wiggles smaller than", 0.25, 3, 0.25, "cells"],
   ["— ROUTE PLANNING —"],
   ["maxSlopeDeg", "Max drivable slope", 5, 45, 1, "°"],
-  ["slopeWeight", "Slope avoidance", 0, 1, 0.01, ""]
+  ["slopeWeight", "Slope avoidance", 0, 1, 0.01, ""],
+  ["— ONLINE HAZARD DATA (fetched per route) —"],
+  ["useCraters", "Avoid craters (USGS database)", "bool"],
+  ["craterMinKm", "Smallest crater to avoid", 1, 10, 0.5, "km"],
+  ["craterMaxKm", "Largest crater to avoid", 2, 50, 1, "km"],
+  ["craterMargin", "Rim safety factor", 1, 1.6, 0.05, "×"]
 ];
 
 // Restore saved settings (browser storage may be unavailable: ignore then)
 const NAV_DEFAULTS = { ...NAV_SETTINGS };
-try { Object.assign(NAV_SETTINGS, JSON.parse(localStorage.getItem("marsNavSettings") || "{}")); } catch (e) {}
+// Saved settings carry a version; when a default changes, older saved values of it are dropped.
+const NAV_SETTINGS_VERSION = 2;
+const CHANGED_DEFAULTS = { 2: ["minTurnDeg"] };
+try {
+  const saved = JSON.parse(localStorage.getItem("marsNavSettings") || "{}");
+  for (let v = (saved._v || 1) + 1; v <= NAV_SETTINGS_VERSION; v++) (CHANGED_DEFAULTS[v] || []).forEach(k => delete saved[k]);
+  delete saved._v;
+  Object.assign(NAV_SETTINGS, saved);
+} catch (e) {}
 
 function initNav({ map, getView, MARS_SR, loadModules }) {
   const state = {
     mode: null,           // "start" | "end" | "hazard" | null
     start: null, end: null,
-    hazards: [],          // { x, y, radiusKm, name }
+    hazards: [],          // manual + mission.geojson hazards: { x, y, radiusKm, name }
+    autoHazards: [],      // hazards fetched online for the current route area (craters)
     route: null,          // { path, cum, waypoints, maneuvers, stats }
     sim: null,
-    follow: true
+    follow: true,
+    track: false          // overview mode: keep the vehicle centered
   };
 
   let GraphicsLayer, Graphic, Multipoint, Camera, layer, elevation;
@@ -97,16 +125,66 @@ function initNav({ map, getView, MARS_SR, loadModules }) {
   $("btnHazard").onclick = () => setMode("hazard");
   $("btnRoute").onclick = () => computeRoute();
   $("btnSim").onclick = () => toggleSimulation();
-  $("btnFollow").onclick = () => {
-    state.follow = !state.follow;
+  // Camera modes:
+  //  FOLLOW CAM      Waze-like, behind the vehicle, heading-up
+  //  ROUTE OVERVIEW  straight down, north-up, with two options:
+  //     ⛶ FIT ROUTE      zoom so the whole route fits between the HUD panels (also done on entering)
+  //     ⌖ TRACK VEHICLE  keep the vehicle centered while driving, at whatever zoom you choose
+  function setCamMode(mode) {
+    state.follow = mode === "follow";
     $("btnFollow").classList.toggle("active", state.follow);
+    $("btnOverview").classList.toggle("active", !state.follow);
+  $("overviewOpts").hidden = state.follow;
+    $("overviewOpts").hidden = state.follow;
+    const v = getView();
+    if (!v) return;
+    v.padding = { top: 0, left: 0, right: 0, bottom: 0 };
+    if (state.follow) {
+      if (state.sim?.pos) followCamera(state.sim.pos, state.sim.smoothHeading ?? state.sim.heading,
+                                       state.sim.smoothTilt ?? NAV_SETTINGS.camTiltBase, state.sim.grade || 0);
+    } else if (state.track && (state.sim?.pos || state.start)) {
+      trackVehicle(state.sim?.pos || state.start, true);
+    } else {
+      showOverview();
+    }
+  }
+  $("btnFit").onclick = () => { state.track = false; $("btnTrack").classList.remove("active"); showOverview(); };
+  $("btnTrack").onclick = () => {
+    state.track = !state.track;
+    $("btnTrack").classList.toggle("active", state.track);
+    if (state.track) trackVehicle(state.sim?.pos || state.start, true);
   };
+  $("btnFollow").onclick = () => setCamMode("follow");
+  $("btnOverview").onclick = () => setCamMode("overview");
   $("btnFollow").classList.toggle("active", state.follow);
+  $("btnOverview").classList.toggle("active", !state.follow);
+  const showAuto = () => {
+    $("btnAuto").textContent = `↻ AUTO RECOMPUTE: ${NAV_SETTINGS.autoRecompute ? "ON" : "OFF"}`;
+    $("btnAuto").classList.toggle("active", NAV_SETTINGS.autoRecompute);
+  };
+  $("btnAuto").onclick = () => {
+    NAV_SETTINGS.autoRecompute = !NAV_SETTINGS.autoRecompute;
+    showAuto(); saveSettings();
+    if (NAV_SETTINGS.autoRecompute && state.route?.stale) computeRoute();
+  };
+  showAuto();
+
+  // Something changed after the route was planned: re-plan, or flag the route as outdated
+  function inputsChanged() {
+    if (!state.start || !state.end) return;
+    if (NAV_SETTINGS.autoRecompute || !state.route) { if (NAV_SETTINGS.autoRecompute) computeRoute(); return; }
+    state.route.stale = true;
+    $("btnRoute").classList.add("pulse");
+    status("Route outdated — press COMPUTE ROUTE");
+    redraw();
+  }
   $("hazardRadius").value = String(NAV_SETTINGS.hazardRadiusKm);
   $("hazardRadius").onchange = (e) => { NAV_SETTINGS.hazardRadiusKm = parseFloat(e.target.value); };
   $("btnClear").onclick = () => {
     stopSim(); state.start = state.end = state.route = null;
     state.hazards = state.hazards.filter(h => h.fromFile);
+    state.autoHazards = [];
+    $("btnRoute").classList.remove("pulse");
     updateHud(); redraw(); status("Cleared");
   };
 
@@ -130,8 +208,7 @@ function initNav({ map, getView, MARS_SR, loadModules }) {
       if (placed !== "hazard") setMode(null);   // stay in hazard mode to place several
       stopSim();
       updateHud(); redraw();
-      // Re-plan automatically whenever start, end or hazards change
-      if (state.start && state.end) computeRoute();
+      inputsChanged();
     });
   }
 
@@ -192,9 +269,12 @@ function initNav({ map, getView, MARS_SR, loadModules }) {
         return;
       }
       state.route = buildRoute(result);
+      $("btnRoute").classList.remove("pulse");
       updateHud(); redraw();
-      const avoided = state.hazards.filter(h => h.nearRoute).length;
-      status(`Route ready · ${state.route.maneuvers.length - 1} turns · ${avoided} hazard zone(s) avoided nearby`);
+      if (!state.follow) showOverview();
+      const avoided = [...state.hazards, ...state.autoHazards].filter(h => h.nearRoute).length;
+      status(`Route ready · ${state.route.maneuvers.length - 1} turns · ${avoided} hazard zone(s) near the route avoided` +
+             (state.autoHazards.length ? ` · ${state.autoHazards.length} crater(s) checked` : ""));
     } catch (err) {
       console.error("Route failed:", err);
       status("Route failed: " + err.message);
@@ -224,15 +304,19 @@ function initNav({ map, getView, MARS_SR, loadModules }) {
                                                { demResolution: "finest-contiguous" });
     const z = res.geometry.points.map(p => p[2]);
 
+    // Online hazard data, only for this search area
+    state.autoHazards = await fetchCraterHazards({ xmin, ymin, xmax, ymax });
+    const allHazards = [...state.hazards, ...state.autoHazards];
+
     // Hazard zones are blocked with a safety margin of one grid cell, so the
     // straight segments between cells can't cut through the edge of a zone.
     const cellKm = Math.max(dx * KM_PER_DEG * Math.cos(((ymin + ymax) / 2) * toR), dy * KM_PER_DEG);
     const margin = cellKm * 0.75;
     const blocked = new Uint8Array(rows * cols);
-    state.hazards.forEach(h => h.nearRoute = false);
+    allHazards.forEach(h => h.nearRoute = false);
     for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
       const p = cellPos(r, c);
-      for (const h of state.hazards) if (distKm(p, h) <= h.radiusKm + margin) { blocked[idx(r, c)] = 1; break; }
+      for (const h of allHazards) if (distKm(p, h) <= h.radiusKm + margin) { blocked[idx(r, c)] = 1; break; }
     }
     const toCell = (p) => [Math.round((p.y - ymin) / dy), Math.round((p.x - xmin) / dx)];
     const s = toCell(start), g = toCell(end);
@@ -241,13 +325,101 @@ function initNav({ map, getView, MARS_SR, loadModules }) {
     status("Searching path…");
     const path = aStar({ rows, cols, z, blocked, cellPos, start: s, goal: g });
     if (!path) return null;
-    const full = path.map(([r, c]) => { const p = cellPos(r, c); return [p.x, p.y, z[idx(r, c)]]; });
+    // Elevation anywhere inside the grid (bilinear interpolation between cells)
+    const zAt = (r, c) => {
+      const r0 = Math.max(0, Math.min(rows - 2, Math.floor(r))), c0 = Math.max(0, Math.min(cols - 2, Math.floor(c)));
+      const fr = Math.min(1, Math.max(0, r - r0)), fc = Math.min(1, Math.max(0, c - c0));
+      const z00 = z[idx(r0, c0)], z01 = z[idx(r0, c0 + 1)], z10 = z[idx(r0 + 1, c0)], z11 = z[idx(r0 + 1, c0 + 1)];
+      return (z00 * (1 - fc) + z01 * fc) * (1 - fr) + (z10 * (1 - fc) + z11 * fc) * fr;
+    };
+    const posAt = (r, c) => ({ x: xmin + c * dx, y: ymin + r * dy });
+
+    // Is the straight line between two grid positions safe? Sampled every 1/3 cell:
+    // no blocked cell (hazard) and no slope above the limit between samples.
+    const segSafe = (a, b) => {
+      const n = Math.max(1, Math.ceil(Math.hypot(b[0] - a[0], b[1] - a[1]) * 3));
+      let prev = null;
+      for (let k = 0; k <= n; k++) {
+        const r = a[0] + (b[0] - a[0]) * (k / n), c = a[1] + (b[1] - a[1]) * (k / n);
+        const rr = Math.round(r), cc = Math.round(c);
+        if (blocked[idx(rr, cc)]) return false;
+        const cur = { ...posAt(r, c), z: zAt(r, c) };
+        if (prev) {
+          const d = distKm(prev, cur) * 1000;
+          if (d > 0 && Math.abs(Math.atan((cur.z - prev.z) / d)) / toR > NAV_SETTINGS.maxSlopeDeg) return false;
+        }
+        prev = cur;
+      }
+      return true;
+    };
+
+    // Path smoothing ("string pulling"): from each corner, jump to the farthest later
+    // point of the grid path that can be reached in a safe straight line.
+    let corners = path;
+    if (NAV_SETTINGS.pathSmoothing && path.length > 2) {
+      corners = [path[0]];
+      let i = 0;
+      while (i < path.length - 1) {
+        let j = path.length - 1;
+        while (j > i + 1 && !segSafe(path[i], path[j])) j--;
+        corners.push(path[j]);
+        i = j;
+      }
+    }
+
+    // Re-sample the straight segments about once per cell, so distances, the
+    // elevation profile and climb/descent readings stay detailed.
+    const full = [];
+    for (let k = 0; k < corners.length - 1; k++) {
+      const a = corners[k], b = corners[k + 1];
+      const n = Math.max(1, Math.round(Math.hypot(b[0] - a[0], b[1] - a[1])));
+      for (let m = 0; m < n; m++) {
+        const r = a[0] + (b[0] - a[0]) * (m / n), c = a[1] + (b[1] - a[1]) * (m / n);
+        const p = posAt(r, c);
+        full.push([p.x, p.y, zAt(r, c)]);
+      }
+    }
+    const last = corners[corners.length - 1];
+    full.push([posAt(...last).x, posAt(...last).y, zAt(...last)]);
     full[0] = [start.x, start.y, full[0][2]];
     full[full.length - 1] = [end.x, end.y, full[full.length - 1][2]];
 
     // Which hazards does the route pass close to (within 2 radii)?
-    for (const h of state.hazards) h.nearRoute = full.some(p => distKm(P(p), h) <= h.radiusKm * 2 + cellKm);
-    return { path: full, tol: Math.max(dx, dy) * 1.5 };
+    for (const h of allHazards) h.nearRoute = full.some(p => distKm(P(p), h) <= h.radiusKm * 2 + cellKm);
+    return { path: full, tol: Math.max(dx, dy) * NAV_SETTINGS.simplifyCells };
+  }
+
+  // ---------- online hazard data (fetched on demand) ----------
+  // Only the craters inside the route's search box are requested, in one small query
+  // to the USGS OGC API. Results are cached per box, so recomputing the same route
+  // doesn't download them again.
+  const craterCache = new Map();
+  async function fetchCraterHazards(b) {
+    if (!NAV_SETTINGS.useCraters) return [];
+    const bbox = [b.xmin, b.ymin, b.xmax, b.ymax].map(v => v.toFixed(3)).join(",");
+    let feats = craterCache.get(bbox);
+    if (!feats) {
+      status("Fetching crater data for this area…");
+      try {
+        const url = "https://astrogeology.usgs.gov/pygeoapi/collections/mars/robbinsv1/items" +
+                    `?f=json&limit=5000&bbox=${bbox}`;
+        const res = await fetch(url, { signal: AbortSignal.timeout(15000) });
+        feats = (await res.json()).features || [];
+        craterCache.set(bbox, feats);
+      } catch (err) {
+        console.warn("Crater data unavailable, planning without it:", err);
+        status("Crater data unavailable — planning with terrain and manual hazards only");
+        return [];
+      }
+    }
+    const { craterMinKm, craterMaxKm, craterMargin } = NAV_SETTINGS;
+    return feats
+      .map(f => ({ x: f.properties.lon_e, y: f.properties.lat, d: f.properties.diamkm, id: f.properties.craterid }))
+      .filter(c => c.d >= craterMinKm && c.d <= craterMaxKm)
+      .map(c => ({ x: c.x, y: c.y, radiusKm: (c.d / 2) * craterMargin, name: `Crater ${c.d.toFixed(1)} km`,
+                   auto: true, id: c.id }))
+      // a start or destination inside a crater: that crater can't be a no-go zone
+      .filter(h => distKm(state.start, h) > h.radiusKm && distKm(state.end, h) > h.radiusKm);
   }
 
   function aStar({ rows, cols, z, blocked, cellPos, start, goal }) {
@@ -364,13 +536,29 @@ function initNav({ map, getView, MARS_SR, loadModules }) {
       }));
     }
 
-    if (state.route) {
+    for (const hz of state.autoHazards) {
+      layer.add(new Graphic({
+        geometry: { type: "polygon", rings: [circle(hz, hz.radiusKm, 32)], spatialReference: sr },
+        symbol: { type: "simple-fill", color: [255, 170, 60, 0.12], outline: { color: [255, 170, 60, 0.85], width: 1, style: "dot" } }
+      }));
+      layer.add(new Graphic({
+        geometry: { type: "point", x: hz.x, y: hz.y, spatialReference: sr },
+        symbol: { type: "text", text: hz.name.toUpperCase(), color: [255, 190, 110], haloColor: "black", haloSize: 1,
+                  font: { size: 8, family: "monospace" } }
+      }));
+    }
+
+    if (state.route?.stale) {
+      // outdated route: grey and dashed until COMPUTE ROUTE is pressed
+      layer.add(new Graphic({ geometry: { type: "polyline", paths: [state.route.path.map(p => [p[0], p[1]])], spatialReference: sr },
+        symbol: { type: "simple-line", color: [180, 190, 200, 0.8], width: 3, style: "dash" } }));
+    } else if (state.route) {
       const paths = [state.route.path.map(p => [p[0], p[1]])];
       layer.add(new Graphic({ geometry: { type: "polyline", paths, spatialReference: sr },
         symbol: { type: "simple-line", color: [...CYAN, 0.35], width: 10, cap: "round", join: "round" } }));
       layer.add(new Graphic({ geometry: { type: "polyline", paths, spatialReference: sr },
         symbol: { type: "simple-line", color: [240, 252, 255, 1], width: 3, cap: "round", join: "round" } }));
-      state.route.maneuvers.slice(0, -1).forEach((m) => {
+      if (!state.route.stale) state.route.maneuvers.slice(0, -1).forEach((m) => {
         const w = state.route.path[m.i];
         layer.add(new Graphic({ geometry: { type: "point", x: w[0], y: w[1], spatialReference: sr },
           symbol: { type: "simple-marker", style: "circle", size: 16, color: [0, 0, 0, 0.35], outline: { color: [...CYAN, 1], width: 2 } } }));
@@ -432,7 +620,8 @@ function initNav({ map, getView, MARS_SR, loadModules }) {
     $("hudEta").textContent = s ? fmtTime(s.etaH) : "--";
     $("hudGain").textContent = s ? `+${Math.round(s.gain)} / -${Math.round(s.loss)} m` : "--";
     $("hudSlope").textContent = s ? s.maxSlope.toFixed(1) + "°" : "--";
-    $("hudHazards").textContent = state.hazards.length;
+    $("hudHazards").textContent = state.autoHazards.length
+      ? `${state.hazards.length} + ${state.autoHazards.length} craters` : state.hazards.length;
     $("btnSim").disabled = !state.route;
     if (!state.sim) {
       const hd = state.route ? bearing(P(state.route.path[0]), P(state.route.path[Math.min(3, state.route.path.length - 1)]))
@@ -562,6 +751,7 @@ function initNav({ map, getView, MARS_SR, loadModules }) {
     updateGuidance(d);
     setProgress(t); drawProfile(); updateSimGraphic(); updateCamReadout();
     if (state.follow) followCamera(pos, smoothHeading, smoothTilt, grade);
+    else if (state.track) trackVehicle(pos);
 
     if (d < total) requestAnimationFrame(step);
     else {
@@ -578,6 +768,77 @@ function initNav({ map, getView, MARS_SR, loadModules }) {
     $("hudSpeed").textContent = `${NAV_SETTINGS.speedKmh} km/h · ${NAV_SETTINGS.timeWarp}×`;
     const tilt = state.sim?.smoothTilt ?? NAV_SETTINGS.camTiltBase;
     $("hudCam").textContent = `${Math.round(camAltitude())} m · ${Math.round(tilt)}°`;
+  }
+
+  // Free screen area between the HUD panels, in pixels from each edge of the map
+  function hudPadding(view) {
+    const vr = view.container.getBoundingClientRect();
+    const box = (id) => { const el = document.getElementById(id); return el && !el.hidden ? el.getBoundingClientRect() : null; };
+    const L = box("left"), R = box("right"), T = box("guidance") || box("topbar"), B = box("bottom");
+    let pad = {
+      left: L ? Math.max(0, L.right - vr.left) + 20 : 40,
+      right: R ? Math.max(0, vr.right - R.left) + 20 : 40,
+      top: T ? Math.max(0, T.bottom - vr.top) + 20 : 40,
+      bottom: B ? Math.max(0, vr.bottom - B.top) + 20 : 40
+    };
+    // never let the panels take more than 70 % of the screen (small windows)
+    const kx = Math.min(1, 0.7 * vr.width / Math.max(1, pad.left + pad.right));
+    const ky = Math.min(1, 0.7 * vr.height / Math.max(1, pad.top + pad.bottom));
+    return { W: vr.width, H: vr.height, left: pad.left * kx, right: pad.right * kx, top: pad.top * ky, bottom: pad.bottom * ky };
+  }
+
+  // Route overview: straight down, north-up, the route (or start/end) fitted between the panels.
+  // The camera is computed directly (zoom from the route size, center shifted for the panels),
+  // which works the same in 2D and 3D.
+  function showOverview() {
+    const view = getView();
+    if (!view || !view.ready) return;
+    const pts = state.route ? state.route.path
+              : [state.start, state.end].filter(Boolean).map(p => [p.x, p.y, 0]);
+    if (!pts.length) { status("Nothing to fit yet — set a start and destination"); return; }
+    const xs = pts.map(p => p[0]), ys = pts.map(p => p[1]);
+    const cx = (Math.min(...xs) + Math.max(...xs)) / 2, cy = (Math.min(...ys) + Math.max(...ys)) / 2;
+    const spanXm = Math.max(500, (Math.max(...xs) - Math.min(...xs)) * KM_PER_DEG * Math.cos(cy * toR) * 1000);
+    const spanYm = Math.max(500, (Math.max(...ys) - Math.min(...ys)) * KM_PER_DEG * 1000);
+    const pad = hudPadding(view);
+    const availW = Math.max(100, pad.W - pad.left - pad.right), availH = Math.max(100, pad.H - pad.top - pad.bottom);
+    const mPerPx = Math.max(spanXm / availW, spanYm / availH) * 1.15;          // 15 % margin
+    // move the camera so the route's center lands in the middle of the free area
+    const shiftE = -((pad.left - pad.right) / 2) * mPerPx / 1000;              // km east
+    const shiftN = ((pad.top - pad.bottom) / 2) * mPerPx / 1000;               // km north
+    const c = offset(offset({ x: cx, y: cy }, 90, shiftE), 0, shiftN);
+    const zMean = pts.reduce((s, p) => s + (p[2] || 0), 0) / pts.length;
+
+    if (view.type === "3d") {
+      const fov = (view.camera?.fov || 55) * toR;                              // camera field of view
+      const alt = (Math.max(pad.W, pad.H) / 2) * mPerPx / Math.tan(fov / 2);
+      view.goTo(new Camera({
+        position: { type: "point", x: c.x, y: c.y, z: zMean + alt, spatialReference: MARS_SR },
+        heading: 0, tilt: 0
+      }), { duration: 1200 }).catch(() => {});
+    } else {
+      view.goTo({ center: { type: "point", x: c.x, y: c.y, spatialReference: MARS_SR },
+                  scale: mPerPx * 96 / 0.0254, rotation: 0 }, { duration: 1200 }).catch(() => {});
+    }
+  }
+
+  // Overview + TRACK: keep the vehicle centered, north-up, straight down, keeping the user's zoom
+  function trackVehicle(pos, animate = false) {
+    const view = getView();
+    if (!view || !view.ready || !pos) return;
+    const z = pos.z ?? 0;
+    if (view.type === "3d") {
+      const cur = view.camera;
+      // current height above the vehicle = the zoom the user picked (mouse wheel still works)
+      const h = cur && cur.tilt < 5 ? Math.max(300, cur.position.z - z) : 15000;
+      const cam = new Camera({ position: { type: "point", x: pos.x, y: pos.y, z: z + h, spatialReference: MARS_SR },
+                               heading: 0, tilt: 0 });
+      if (animate) view.goTo(cam, { duration: 800 }).catch(() => {}); else view.camera = cam;
+    } else {
+      const center = { type: "point", x: pos.x, y: pos.y, spatialReference: MARS_SR };
+      if (animate) view.goTo({ center, rotation: 0 }, { duration: 800 }).catch(() => {});
+      else { view.center = center; if (view.rotation) view.rotation = 0; }
+    }
   }
 
   // Waze-style camera: 3D = behind and above the vehicle looking forward; 2D = heading-up.
@@ -625,14 +886,19 @@ function initNav({ map, getView, MARS_SR, loadModules }) {
       const name = document.createElement("span"); name.textContent = label;
       const val = document.createElement("span"); val.className = "set-val";
       const input = document.createElement("input");
-      Object.assign(input, { type: "range", min, max, step: stepV, value: NAV_SETTINGS[key] });
-      const show = () => { val.textContent = `${NAV_SETTINGS[key]} ${unit}`; };
+      const isBool = min === "bool";
+      if (isBool) Object.assign(input, { type: "checkbox", checked: !!NAV_SETTINGS[key] });
+      else Object.assign(input, { type: "range", min, max, step: stepV, value: NAV_SETTINGS[key] });
+      const show = () => { val.textContent = isBool ? (NAV_SETTINGS[key] ? "ON" : "OFF") : `${NAV_SETTINGS[key]} ${unit}`; };
       input.oninput = () => {
-        NAV_SETTINGS[key] = parseFloat(input.value);
+        NAV_SETTINGS[key] = isBool ? input.checked : parseFloat(input.value);
+        if (["useCraters", "craterMinKm", "craterMaxKm", "craterMargin", "maxSlopeDeg", "slopeWeight",
+             "pathSmoothing", "minTurnDeg", "simplifyCells"].includes(key)) inputsChanged();
         if (key === "camTiltMin" && NAV_SETTINGS.camTiltMin > NAV_SETTINGS.camTiltMax) NAV_SETTINGS.camTiltMax = NAV_SETTINGS.camTiltMin;
         show(); applySettings();
       };
       show();
+      if (isBool) row.classList.add("bool");
       row.append(name, val, input); box.append(row);
     }
   }
@@ -641,8 +907,11 @@ function initNav({ map, getView, MARS_SR, loadModules }) {
     if (state.route) state.route.stats.etaH = state.route.stats.dist / NAV_SETTINGS.speedKmh;
     updateCamReadout();
     if (!state.sim) updateHud(); else setProgress(state.sim.t);
+    saveSettings();
+  }
+  function saveSettings() {
     clearTimeout(saveTimer);
-    saveTimer = setTimeout(() => { try { localStorage.setItem("marsNavSettings", JSON.stringify(NAV_SETTINGS)); } catch (e) {} }, 300);
+    saveTimer = setTimeout(() => { try { localStorage.setItem("marsNavSettings", JSON.stringify({ ...NAV_SETTINGS, _v: NAV_SETTINGS_VERSION })); } catch (e) {} }, 300);
   }
   $("btnSettings").onclick = () => { $("settings").hidden = !$("settings").hidden; };
   $("btnSettingsClose").onclick = () => { $("settings").hidden = true; };
