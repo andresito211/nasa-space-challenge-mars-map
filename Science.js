@@ -14,8 +14,9 @@
 
 const TREK_SCIENCE_LAYERS = [
   // id                                                   title                                             maxLevel opacity
+  ["THEMIS_DayIR_ControlledMosaics_100m_v2_oct2018",   "Day infrared, THEMIS 100 m (mostly slope shading + surface)", 9, 0.85],
   ["THEMIS_NightIR_ControlledMosaics_100m_v2_oct2018", "Night infrared, THEMIS 100 m (bright = rocky, dark = dusty)", 9, 0.85],
-  ["TES_Thermal_Inertia",                               "Thermal inertia, TES (low = loose dust/sand)",               1, 0.75],
+  ["TES_Thermal_Inertia",                               "Thermal inertia, TES global (low = loose dust/sand)",        1, 0.75],
   ["tes_ruffdust",                                      "Dust cover index, TES",                                       2, 0.75],
   ["TES_Dust",                                          "Surface dust, TES",                                           1, 0.75],
   ["Mars_MGS_TES_Albedo_mosaic_global_7410m",           "Albedo (brightness), TES",                                    1, 0.75],
