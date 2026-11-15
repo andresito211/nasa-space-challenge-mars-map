@@ -102,6 +102,15 @@
     .sr .m { font-size: 10px; color: rgba(159,233,255,.65); margin-top: 2px; }
     .sr.none { color: rgba(159,233,255,.6); cursor: default; }
 
+    /* Mars clock, departure, weather */
+    #marsClock { color: #ffd27a; white-space: nowrap; }
+    #depMode, #depTime { background: #061a28; color: #e8fbff; border: 1px solid rgba(57,215,255,.5); font: 11px var(--mono); }
+    #depTime { width: 100%; box-sizing: border-box; margin: 4px 0; color-scheme: dark; }
+    #depTime:disabled { opacity: .45; }
+    #wCheck { margin: 4px 0 6px; padding: 5px 6px; border: 1px solid rgba(57,215,255,.3); font-size: 11px; }
+    #wCheck.ok { border-color: rgba(120,255,170,.6); color: #9dffc6; }
+    #wCheck.bad { border-color: rgba(255,90,90,.7); color: #ffb0b0; }
+
     /* ROUTE sub-window */
     #routeFly { width: 220px; z-index: 7; opacity: 0; pointer-events: none;
       transform: translateX(-16px); transition: opacity .2s, transform .2s; }
@@ -207,6 +216,7 @@
     <div class="stripes"></div>
     <div class="title">MARS NAVIGATION</div>
     <div class="stripes"></div>
+    <span id="marsClock" title="Mars clock">MY -- · Ls --</span>
     <span id="coords">--</span>
     <button id="toggle" class="btn" disabled>Loading…</button>
     <button id="btnSettings" class="btn" style="width:auto;margin:0">⚙ SETTINGS</button>
@@ -267,6 +277,12 @@
     <button id="btnRoute" class="btn">⟲ COMPUTE ROUTE</button>
     <button id="btnAuto" class="btn">↻ AUTO RECOMPUTE: OFF</button>
     <div class="sep"></div>
+    <div class="row radius"><span>DEPARTURE</span>
+      <select id="depMode"><option value="now">now</option><option value="custom">set time</option></select></div>
+    <input id="depTime" type="datetime-local" title="Departure, UTC">
+    <div id="depInfo" class="set-note"></div>
+    <button id="btnUseSuggested" class="btn" hidden>⏱ USE SUGGESTED DEPARTURE</button>
+    <div class="sep"></div>
     <button id="btnExport" class="btn" disabled>⇩ EXPORT ROUTE (.json)</button>
     <button id="btnImport" class="btn">⇧ IMPORT ROUTE (.json)</button>
     <input id="fileImport" type="file" accept=".json,application/json" hidden>
@@ -276,6 +292,7 @@
   <div id="right" class="panel">
     <div class="tabs">
       <button class="tab active" data-tab="telemetry">TELEMETRY</button>
+      <button class="tab" data-tab="weather">WEATHER</button>
       <button class="tab" data-tab="layers">LAYERS</button>
       <button class="min" title="Minimize">–</button>
     </div>
@@ -294,6 +311,23 @@
         <div class="row"><span>SPEED</span><span id="hudSpeed">--</span></div>
         <div class="row"><span>POV HEIGHT · PITCH</span><span id="hudCam">--</span></div>
         <div class="row"><span>HAZARDS</span><span id="hudHazards">0</span></div>
+      </div>
+      <div id="tab-weather" class="tabpane" hidden>
+        <div class="dest"><div class="lbl">CONDITIONS · <span id="wWhere">--</span></div><div class="val" id="wTime">--</div></div>
+        <div class="row"><span>AIR TEMP</span><span id="wAir">--</span></div>
+        <div class="row"><span>GROUND TEMP</span><span id="wGround">--</span></div>
+        <div class="row"><span>PRESSURE</span><span id="wPres">--</span></div>
+        <div class="row"><span>WIND</span><span id="wWind">--</span></div>
+        <div class="row"><span>DUST</span><span id="wDust">--</span></div>
+        <div class="row"><span>DUST DEVILS</span><span id="wDevils">--</span></div>
+        <h3 style="margin-top:10px">// ALONG THE ROUTE</h3>
+        <div id="wCheck">--</div>
+        <div class="row"><span>TEMP RANGE</span><span id="wRouteT">--</span></div>
+        <div class="row"><span>MAX WIND</span><span id="wRouteWind">--</span></div>
+        <div class="row"><span>MAX DUST</span><span id="wRouteDust">--</span></div>
+        <div class="row"><span>ARRIVAL</span><span id="wArrive">--</span></div>
+        <div id="wSuggest" class="set-note"></div>
+        <div class="set-note">Typical conditions from climate.json for that place, season and local time — not live weather.</div>
       </div>
       <div id="tab-layers" class="tabpane" hidden>
         <div id="layerListHost" class="calcite-mode-dark"></div>
@@ -327,6 +361,8 @@
   </script>
   <script src="science.js"></script>
   <script src="craters.js"></script>
+  <script src="marsclock.js"></script>
+  <script src="weather.js"></script>
   <script src="nav.js"></script>
   <script>
   // ---- OPTION A (default): load the public Esri/USGS Mars services directly.
@@ -395,6 +431,7 @@
 
     // Navigation system (route planner + HUD), see nav.js
     // Craters layer (USGS, loaded on demand) — see craters.js; the route planner uses it too
+    await Climate.load("climate.json");   // typical weather table (see weather.js), loaded once
     const craterLayer = initCraterLayer({ map, MARS_SR, loadModules, settings: NAV_SETTINGS });
     window.nav = initNav({ map, getView: () => currentView, MARS_SR, loadModules, craterLayer,
                            getGazetteer: buildGazetteer });
