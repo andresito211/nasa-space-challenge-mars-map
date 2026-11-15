@@ -281,6 +281,7 @@
       btn.title = c ? "Restore" : "Minimize";
     });
   </script>
+  <script src="craters.js"></script>
   <script src="nav.js"></script>
   <script>
   // ---- OPTION A (default): load the public Esri/USGS Mars services directly.
@@ -352,7 +353,9 @@
     await addGeoData(map);
 
     // Navigation system (route planner + HUD), see nav.js
-    window.nav = initNav({ map, getView: () => currentView, MARS_SR, loadModules });
+    // Craters layer (USGS, loaded on demand) — see craters.js; the route planner uses it too
+    const craterLayer = initCraterLayer({ map, MARS_SR, loadModules, settings: NAV_SETTINGS });
+    window.nav = initNav({ map, getView: () => currentView, MARS_SR, loadModules, craterLayer });
 
     // Start in 3D; the button in the HUD switches between globe and flat map.
     // The button is wired up first and never waits for a view to finish loading,

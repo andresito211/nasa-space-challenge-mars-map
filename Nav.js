@@ -32,6 +32,7 @@ const NAV_SETTINGS = {
   craterMaxKm: 8,        // craters up to this size are no-go zones; bigger ones (like Jezero)
                          // are left to the slope check, since their floors can be driven on
   craterMargin: 1.15,    // no-go radius = crater radius × this (covers the rim)
+  craterViewMaxDeg: 8,   // crater layer loads the visible area only when the view is narrower than this
   minTurnDeg: 10,        // smaller direction changes are "continue straight" (no instruction)
   pathSmoothing: true,   // straighten the grid zigzag wherever the straight line is still safe
   simplifyCells: 0.5,    // bends smaller than this (in grid cells) don't become turn points
@@ -72,7 +73,8 @@ const NAV_SETTINGS_UI = [
   ["useCraters", "Avoid craters (USGS database)", "bool"],
   ["craterMinKm", "Smallest crater to avoid", 1, 10, 0.5, "km"],
   ["craterMaxKm", "Largest crater to avoid", 2, 50, 1, "km"],
-  ["craterMargin", "Rim safety factor", 1, 1.6, 0.05, "×"]
+  ["craterMargin", "Rim safety factor", 1, 1.6, 0.05, "×"],
+  ["craterViewMaxDeg", "Crater layer: load when view narrower than", 2, 20, 1, "°"]
 ];
 
 // Restore saved settings (browser storage may be unavailable: ignore then)
@@ -87,7 +89,7 @@ try {
   Object.assign(NAV_SETTINGS, saved);
 } catch (e) {}
 
-function initNav({ map, getView, MARS_SR, loadModules }) {
+function initNav({ map, getView, MARS_SR, loadModules, craterLayer }) {
   const state = {
     mode: null,           // "start" | "end" | "hazard" | null
     start: null, end: null,
@@ -184,6 +186,7 @@ function initNav({ map, getView, MARS_SR, loadModules }) {
     stopSim(); state.start = state.end = state.route = null;
     state.hazards = state.hazards.filter(h => h.fromFile);
     state.autoHazards = [];
+    craterLayer?.setBlocked([]);
     $("btnRoute").classList.remove("pulse");
     updateHud(); redraw(); status("Cleared");
   };
@@ -192,6 +195,7 @@ function initNav({ map, getView, MARS_SR, loadModules }) {
 
   // Called every time a 2D or 3D view is created
   function attach(view) {
+    craterLayer?.attach(view);
     view.on("click", (e) => {
       if (!state.mode || !e.mapPoint) return;
       e.stopPropagation();   // don't open popups while placing points
@@ -390,36 +394,28 @@ function initNav({ map, getView, MARS_SR, loadModules }) {
   }
 
   // ---------- online hazard data (fetched on demand) ----------
-  // Only the craters inside the route's search box are requested, in one small query
-  // to the USGS OGC API. Results are cached per box, so recomputing the same route
-  // doesn't download them again.
-  const craterCache = new Map();
+  // The crater layer (craters.js) downloads only the craters inside the route's search
+  // box, once; the planner turns the ones in the size range into no-go zones.
   async function fetchCraterHazards(b) {
-    if (!NAV_SETTINGS.useCraters) return [];
-    const bbox = [b.xmin, b.ymin, b.xmax, b.ymax].map(v => v.toFixed(3)).join(",");
-    let feats = craterCache.get(bbox);
-    if (!feats) {
+    if (!NAV_SETTINGS.useCraters || !craterLayer) { craterLayer?.setBlocked([]); return []; }
+    let craters;
+    try {
       status("Fetching crater data for this area…");
-      try {
-        const url = "https://astrogeology.usgs.gov/pygeoapi/collections/mars/robbinsv1/items" +
-                    `?f=json&limit=5000&bbox=${bbox}`;
-        const res = await fetch(url, { signal: AbortSignal.timeout(15000) });
-        feats = (await res.json()).features || [];
-        craterCache.set(bbox, feats);
-      } catch (err) {
-        console.warn("Crater data unavailable, planning without it:", err);
-        status("Crater data unavailable — planning with terrain and manual hazards only");
-        return [];
-      }
+      craters = await craterLayer.getForBbox(b);
+    } catch (err) {
+      console.warn("Crater data unavailable, planning without it:", err);
+      status("Crater data unavailable — planning with terrain and manual hazards only");
+      return [];
     }
     const { craterMinKm, craterMaxKm, craterMargin } = NAV_SETTINGS;
-    return feats
-      .map(f => ({ x: f.properties.lon_e, y: f.properties.lat, d: f.properties.diamkm, id: f.properties.craterid }))
+    const hazards = craters
       .filter(c => c.d >= craterMinKm && c.d <= craterMaxKm)
       .map(c => ({ x: c.x, y: c.y, radiusKm: (c.d / 2) * craterMargin, name: `Crater ${c.d.toFixed(1)} km`,
                    auto: true, id: c.id }))
       // a start or destination inside a crater: that crater can't be a no-go zone
       .filter(h => distKm(state.start, h) > h.radiusKm && distKm(state.end, h) > h.radiusKm);
+    craterLayer.setBlocked(hazards.map(h => h.id));
+    return hazards;
   }
 
   function aStar({ rows, cols, z, blocked, cellPos, start, goal }) {
@@ -536,17 +532,7 @@ function initNav({ map, getView, MARS_SR, loadModules }) {
       }));
     }
 
-    for (const hz of state.autoHazards) {
-      layer.add(new Graphic({
-        geometry: { type: "polygon", rings: [circle(hz, hz.radiusKm, 32)], spatialReference: sr },
-        symbol: { type: "simple-fill", color: [255, 170, 60, 0.12], outline: { color: [255, 170, 60, 0.85], width: 1, style: "dot" } }
-      }));
-      layer.add(new Graphic({
-        geometry: { type: "point", x: hz.x, y: hz.y, spatialReference: sr },
-        symbol: { type: "text", text: hz.name.toUpperCase(), color: [255, 190, 110], haloColor: "black", haloSize: 1,
-                  font: { size: 8, family: "monospace" } }
-      }));
-    }
+    // crater zones are drawn by the crater layer (craters.js)
 
     if (state.route?.stale) {
       // outdated route: grey and dashed until COMPUTE ROUTE is pressed
