@@ -7,18 +7,14 @@ temperature, wind, dust and darkness at the moment the vehicle passes each point
 
 ![HUD layout (illustration)](docs/hud-layout.png)
 
-*Illustration of the HUD layout. Add real screenshots to `docs/screenshots/` (see [Screenshots](#screenshots)).*
-
-> **Demo / research prototype.** Terrain, crater, climate and radiation values are taken
-> from public datasets and simple models. They are good for exploring ideas, **not** for
-> real mission safety decisions.
+*Illustration of the HUD layout.*
 
 ---
 
 ## Contents
 - [Features](#features)
 - [Quick start](#quick-start)
-- [5-minute demo](#5-minute-demo)
+- [Quick operation guide](#quick-operation-guide)
 - [Project structure](#project-structure)
 - [How the route planner works](#how-the-route-planner-works)
 - [Data sources](#data-sources)
