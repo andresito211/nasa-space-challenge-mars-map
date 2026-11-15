@@ -32,7 +32,9 @@ const NAV_SETTINGS = {
   craterMaxKm: 8,        // craters up to this size are no-go zones; bigger ones (like Jezero)
                          // are left to the slope check, since their floors can be driven on
   craterMargin: 1.15,    // no-go radius = crater radius × this (covers the rim)
-  minTurnDeg: 20,        // smaller direction changes are "continue straight"
+  minTurnDeg: 20,        // smaller direction changes are "continue straight" (no instruction)
+  pathSmoothing: true,   // straighten the grid zigzag wherever the straight line is still safe
+  simplifyCells: 0.5,    // bends smaller than this (in grid cells) don't become turn points
   // ---- simulation + camera (editable in the ⚙ SETTINGS panel, saved in the browser) ----
   speedKmh: 8,           // vehicle speed; also used for ETA
   timeWarp: 60,          // simulation runs this many times faster than real time
@@ -59,6 +61,10 @@ const NAV_SETTINGS_UI = [
   ["camTiltMin", "Minimum pitch", 10, 85, 1, "°"],
   ["camTiltMax", "Maximum pitch", 30, 89, 1, "°"],
   ["camSmoothing", "Camera responsiveness", 0.02, 0.5, 0.01, ""],
+  ["— TURN GUIDANCE —"],
+  ["pathSmoothing", "Straighten path (remove grid zigzag)", "bool"],
+  ["minTurnDeg", "Minimum angle for an instruction", 5, 60, 1, "°"],
+  ["simplifyCells", "Ignore wiggles smaller than", 0.25, 3, 0.25, "cells"],
   ["— ROUTE PLANNING —"],
   ["maxSlopeDeg", "Max drivable slope", 5, 45, 1, "°"],
   ["slopeWeight", "Slope avoidance", 0, 1, 0.01, ""],
@@ -281,13 +287,68 @@ function initNav({ map, getView, MARS_SR, loadModules }) {
     status("Searching path…");
     const path = aStar({ rows, cols, z, blocked, cellPos, start: s, goal: g });
     if (!path) return null;
-    const full = path.map(([r, c]) => { const p = cellPos(r, c); return [p.x, p.y, z[idx(r, c)]]; });
+    // Elevation anywhere inside the grid (bilinear interpolation between cells)
+    const zAt = (r, c) => {
+      const r0 = Math.max(0, Math.min(rows - 2, Math.floor(r))), c0 = Math.max(0, Math.min(cols - 2, Math.floor(c)));
+      const fr = Math.min(1, Math.max(0, r - r0)), fc = Math.min(1, Math.max(0, c - c0));
+      const z00 = z[idx(r0, c0)], z01 = z[idx(r0, c0 + 1)], z10 = z[idx(r0 + 1, c0)], z11 = z[idx(r0 + 1, c0 + 1)];
+      return (z00 * (1 - fc) + z01 * fc) * (1 - fr) + (z10 * (1 - fc) + z11 * fc) * fr;
+    };
+    const posAt = (r, c) => ({ x: xmin + c * dx, y: ymin + r * dy });
+
+    // Is the straight line between two grid positions safe? Sampled every 1/3 cell:
+    // no blocked cell (hazard) and no slope above the limit between samples.
+    const segSafe = (a, b) => {
+      const n = Math.max(1, Math.ceil(Math.hypot(b[0] - a[0], b[1] - a[1]) * 3));
+      let prev = null;
+      for (let k = 0; k <= n; k++) {
+        const r = a[0] + (b[0] - a[0]) * (k / n), c = a[1] + (b[1] - a[1]) * (k / n);
+        const rr = Math.round(r), cc = Math.round(c);
+        if (blocked[idx(rr, cc)]) return false;
+        const cur = { ...posAt(r, c), z: zAt(r, c) };
+        if (prev) {
+          const d = distKm(prev, cur) * 1000;
+          if (d > 0 && Math.abs(Math.atan((cur.z - prev.z) / d)) / toR > NAV_SETTINGS.maxSlopeDeg) return false;
+        }
+        prev = cur;
+      }
+      return true;
+    };
+
+    // Path smoothing ("string pulling"): from each corner, jump to the farthest later
+    // point of the grid path that can be reached in a safe straight line.
+    let corners = path;
+    if (NAV_SETTINGS.pathSmoothing && path.length > 2) {
+      corners = [path[0]];
+      let i = 0;
+      while (i < path.length - 1) {
+        let j = path.length - 1;
+        while (j > i + 1 && !segSafe(path[i], path[j])) j--;
+        corners.push(path[j]);
+        i = j;
+      }
+    }
+
+    // Re-sample the straight segments about once per cell, so distances, the
+    // elevation profile and climb/descent readings stay detailed.
+    const full = [];
+    for (let k = 0; k < corners.length - 1; k++) {
+      const a = corners[k], b = corners[k + 1];
+      const n = Math.max(1, Math.round(Math.hypot(b[0] - a[0], b[1] - a[1])));
+      for (let m = 0; m < n; m++) {
+        const r = a[0] + (b[0] - a[0]) * (m / n), c = a[1] + (b[1] - a[1]) * (m / n);
+        const p = posAt(r, c);
+        full.push([p.x, p.y, zAt(r, c)]);
+      }
+    }
+    const last = corners[corners.length - 1];
+    full.push([posAt(...last).x, posAt(...last).y, zAt(...last)]);
     full[0] = [start.x, start.y, full[0][2]];
     full[full.length - 1] = [end.x, end.y, full[full.length - 1][2]];
 
     // Which hazards does the route pass close to (within 2 radii)?
     for (const h of allHazards) h.nearRoute = full.some(p => distKm(P(p), h) <= h.radiusKm * 2 + cellKm);
-    return { path: full, tol: Math.max(dx, dy) * 1.5 };
+    return { path: full, tol: Math.max(dx, dy) * NAV_SETTINGS.simplifyCells };
   }
 
   // ---------- online hazard data (fetched on demand) ----------
@@ -721,7 +782,8 @@ function initNav({ map, getView, MARS_SR, loadModules }) {
       const show = () => { val.textContent = isBool ? (NAV_SETTINGS[key] ? "ON" : "OFF") : `${NAV_SETTINGS[key]} ${unit}`; };
       input.oninput = () => {
         NAV_SETTINGS[key] = isBool ? input.checked : parseFloat(input.value);
-        if (["useCraters", "craterMinKm", "craterMaxKm", "craterMargin", "maxSlopeDeg", "slopeWeight"].includes(key)) inputsChanged();
+        if (["useCraters", "craterMinKm", "craterMaxKm", "craterMargin", "maxSlopeDeg", "slopeWeight",
+             "pathSmoothing", "minTurnDeg", "simplifyCells"].includes(key)) inputsChanged();
         if (key === "camTiltMin" && NAV_SETTINGS.camTiltMin > NAV_SETTINGS.camTiltMax) NAV_SETTINGS.camTiltMax = NAV_SETTINGS.camTiltMin;
         show(); applySettings();
       };
