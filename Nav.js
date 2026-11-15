@@ -188,8 +188,9 @@ function initNav({ map, getView, MARS_SR, loadModules, craterLayer }) {
     if (NAV_SETTINGS.autoRecompute || !state.route) { if (NAV_SETTINGS.autoRecompute) computeRoute(); return; }
     state.route.stale = true;
     $("btnRoute").classList.add("pulse");
+    $("btnRouteMenu").classList.add("pulse");
     status("Route outdated — press COMPUTE ROUTE");
-    redraw();
+    updateHud(); redraw();
   }
   $("hazardRadius").value = String(NAV_SETTINGS.hazardRadiusKm);
   $("hazardRadius").onchange = (e) => { NAV_SETTINGS.hazardRadiusKm = parseFloat(e.target.value); };
@@ -198,9 +199,105 @@ function initNav({ map, getView, MARS_SR, loadModules, craterLayer }) {
     state.hazards = state.hazards.filter(h => h.fromFile);
     state.autoHazards = [];
     craterLayer?.setBlocked([]);
-    $("btnRoute").classList.remove("pulse");
+    $("btnRoute").classList.remove("pulse"); $("btnRouteMenu").classList.remove("pulse");
     updateHud(); redraw(); status("Cleared");
   };
+
+  // ---------- ROUTE sub-window (slides out next to ROUTE CONTROL) ----------
+  function placeFly() {
+    const b = $("btnRouteMenu").getBoundingClientRect(), l = $("left").getBoundingClientRect();
+    const fly = $("routeFly");
+    fly.style.left = (l.right + 10) + "px";
+    fly.style.top = Math.max(10, Math.min(b.top - 30, window.innerHeight - fly.offsetHeight - 10)) + "px";
+  }
+  const setFly = (open) => {
+    $("routeFly").classList.toggle("open", open);
+    $("routeFly").setAttribute("aria-hidden", String(!open));
+    $("btnRouteMenu").classList.toggle("open", open);
+    if (open) placeFly();
+  };
+  $("btnRouteMenu").onclick = () => setFly(!$("routeFly").classList.contains("open"));
+  $("btnRouteFlyClose").onclick = () => setFly(false);
+  window.addEventListener("resize", () => { if ($("routeFly").classList.contains("open")) placeFly(); });
+  $("left").addEventListener("scroll", () => { if ($("routeFly").classList.contains("open")) placeFly(); });
+
+  // ---------- export / import (JSON) ----------
+  const ROUTE_FORMAT = "mars-nav-route";
+  const r6 = (v) => Math.round(v * 1e6) / 1e6;
+
+  function exportRoute() {
+    if (!state.route) return;
+    const st = state.route.stats;
+    const data = {
+      format: ROUTE_FORMAT, version: 1,
+      name: `Route ${fmt(state.start)} → ${fmt(state.end)}`,
+      exported: new Date().toISOString(),
+      crs: { wkid: MARS_SR.wkid, name: "GCS Mars 2000 (sphere)", units: "degrees; elevation in meters" },
+      start: { lon: r6(state.start.x), lat: r6(state.start.y) },
+      end: { lon: r6(state.end.x), lat: r6(state.end.y) },
+      hazards: state.hazards.map(h => ({ lon: r6(h.x), lat: r6(h.y), radius_km: h.radiusKm, name: h.name,
+                                         source: h.fromFile ? "mission.geojson" : "manual" })),
+      craters_avoided: state.autoHazards.map(h => ({ id: h.id, lon: r6(h.x), lat: r6(h.y),
+                                                     no_go_radius_km: Math.round(h.radiusKm * 1000) / 1000 })),
+      planning: Object.fromEntries(["maxSlopeDeg", "slopeWeight", "pathSmoothing", "minTurnDeg", "simplifyCells",
+        "useCraters", "craterMinKm", "craterMaxKm", "craterMargin", "speedKmh"].map(k => [k, NAV_SETTINGS[k]])),
+      stats: { distance_km: +st.dist.toFixed(3), straight_km: +st.straight.toFixed(3), eta_h: +st.etaH.toFixed(3),
+               gain_m: Math.round(st.gain), loss_m: Math.round(st.loss), max_slope_deg: +st.maxSlope.toFixed(2),
+               dose_msv_est: +st.doseMSv.toFixed(4) },
+      maneuvers: state.route.maneuvers.map(m => ({ index: m.i, at_km: +m.at.toFixed(3), turn_deg: Math.round(m.delta),
+                                                   instruction: m.text, icon: m.icon })),
+      path: state.route.path.map(p => [r6(p[0]), r6(p[1]), Math.round(p[2] * 10) / 10])   // [lon, lat, elevation m]
+    };
+    const blob = new Blob([JSON.stringify(data, null, 1)], { type: "application/json" });
+    const a = document.createElement("a");
+    const t = new Date(), pad = (n) => String(n).padStart(2, "0");
+    a.download = `mars-route-${t.getFullYear()}${pad(t.getMonth() + 1)}${pad(t.getDate())}-${pad(t.getHours())}${pad(t.getMinutes())}.json`;
+    a.href = URL.createObjectURL(blob);
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    status(`Exported ${a.download}`);
+  }
+
+  async function importRoute(file) {
+    try {
+      const data = JSON.parse(await file.text());
+      if (data.format !== ROUTE_FORMAT) throw new Error("not a Mars route file (format field missing)");
+      if (!Array.isArray(data.path) || data.path.length < 2) throw new Error("the file has no route path");
+      if (data.crs?.wkid && data.crs.wkid !== MARS_SR.wkid) console.warn("Route file uses another coordinate system:", data.crs);
+      await ready;
+      stopSim();
+      state.start = { x: data.start.lon, y: data.start.lat };
+      state.end = { x: data.end.lon, y: data.end.lat };
+      // hazards: keep mission.geojson ones, add the file's manual ones
+      state.hazards = state.hazards.filter(h => h.fromFile).concat(
+        (data.hazards || []).filter(h => h.source !== "mission.geojson")
+          .map(h => ({ x: h.lon, y: h.lat, radiusKm: h.radius_km, name: h.name || "Hazard" })));
+      state.autoHazards = (data.craters_avoided || []).map(c => ({ x: c.lon, y: c.lat, radiusKm: c.no_go_radius_km,
+        name: "Crater", auto: true, id: c.id }));
+      craterLayer?.addCraters?.((data.craters_avoided || []).map(c => ({ id: c.id, x: c.lon, y: c.lat,
+        d: (2 * c.no_go_radius_km) / (data.planning?.craterMargin || NAV_SETTINGS.craterMargin) })));
+      craterLayer?.setBlocked(state.autoHazards.map(h => h.id));
+      // rebuild the route from the saved path; keep the saved turn instructions
+      const path = data.path.map(p => [p[0], p[1], p[2] ?? 0]);
+      state.route = buildRoute({ path, tol: 1e-9 });
+      if (Array.isArray(data.maneuvers) && data.maneuvers.length) {
+        state.route.maneuvers = data.maneuvers.map(m => ({ i: m.index, at: state.route.cum[m.index] ?? m.at_km,
+          delta: m.turn_deg || 0, ...(m.turn_deg ? describeTurn(m.turn_deg) : {}),
+          text: m.instruction, icon: m.icon, short: (m.instruction || "").toUpperCase() }));
+      }
+      $("btnRoute").classList.remove("pulse"); $("btnRouteMenu").classList.remove("pulse");
+      updateHud(); redraw();
+      if (!state.follow) showOverview();
+      status(`Imported route · ${state.route.stats.dist.toFixed(1)} km · ${state.route.maneuvers.length - 1} turns`);
+    } catch (err) {
+      console.error("Import failed:", err);
+      status("Import failed: " + err.message);
+    }
+  }
+
+  $("btnExport").onclick = exportRoute;
+  $("btnImport").onclick = () => $("fileImport").click();
+  $("fileImport").onchange = (e) => { const f = e.target.files[0]; if (f) importRoute(f); e.target.value = ""; };
 
   function status(msg) { $("navStatus").textContent = msg; }
 
@@ -297,7 +394,7 @@ function initNav({ map, getView, MARS_SR, loadModules, craterLayer }) {
         return;
       }
       state.route = buildRoute(result);
-      $("btnRoute").classList.remove("pulse");
+      $("btnRoute").classList.remove("pulse"); $("btnRouteMenu").classList.remove("pulse");
       updateHud(); redraw();
       if (!state.follow) showOverview();
       const avoided = [...state.hazards, ...state.autoHazards].filter(h => h.nearRoute).length;
@@ -637,6 +734,10 @@ function initNav({ map, getView, MARS_SR, loadModules, craterLayer }) {
     $("hudHazards").textContent = state.autoHazards.length
       ? `${state.hazards.length} + ${state.autoHazards.length} craters` : state.hazards.length;
     $("btnSim").disabled = !state.route;
+    $("btnExport").disabled = !state.route || !!state.route.stale;
+    $("routeInfo").textContent = state.route
+      ? `${state.route.stale ? "Outdated — recompute before exporting. " : ""}${fmtKm(state.route.stats.dist)} · ${state.route.path.length} points · ${state.route.maneuvers.length - 1} turns`
+      : "No route yet.";
     if (!state.sim) {
       const hd = state.route ? bearing(P(state.route.path[0]), P(state.route.path[Math.min(3, state.route.path.length - 1)]))
                : state.start && state.end ? bearing(state.start, state.end) : 0;

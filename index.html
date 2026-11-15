@@ -87,6 +87,14 @@
     .subrow { display: flex; gap: 4px; margin: -2px 0 4px 12px; border-left: 2px solid rgba(57,215,255,.4); padding-left: 6px; }
     .subrow[hidden] { display: none; }
     .btn.mini { margin: 2px 0; padding: 4px 6px; font-size: 10px; text-align: center; }
+    /* ROUTE sub-window */
+    #routeFly { width: 220px; z-index: 7; opacity: 0; pointer-events: none;
+      transform: translateX(-16px); transition: opacity .2s, transform .2s; }
+    #routeFly.open { opacity: 1; pointer-events: auto; transform: translateX(0); }
+    #routeFly .sep { height: 1px; background: rgba(57,215,255,.25); margin: 8px 0; }
+    #btnRouteMenu .chev { float: right; transition: transform .2s; }
+    #btnRouteMenu.open .chev { transform: rotate(180deg); }
+    #btnRouteMenu.open { background: rgba(57,215,255,.2); }
     /* COMPUTE ROUTE blinks when the route is outdated */
     @keyframes pulse { 0%, 100% { box-shadow: 0 0 0 rgba(255,179,71,0); } 50% { box-shadow: 0 0 12px rgba(255,179,71,.9); } }
     .btn.pulse { border-color: #ffb347; color: #ffd27a; animation: pulse 1.2s infinite; }
@@ -217,8 +225,7 @@
         <option value="0.5">0.5 km</option><option value="1">1 km</option><option value="2">2 km</option>
         <option value="3">3 km</option><option value="5">5 km</option><option value="10">10 km</option>
       </select></div>
-    <button id="btnRoute" class="btn">⟲ COMPUTE ROUTE</button>
-    <button id="btnAuto" class="btn">↻ AUTO RECOMPUTE: OFF</button>
+    <button id="btnRouteMenu" class="btn">⟲ ROUTE <span class="chev">▸</span></button>
     <button id="btnSim" class="btn" disabled>▶ SIMULATE</button>
     <button id="btnFollow" class="btn">◉ FOLLOW CAM</button>
     <button id="btnOverview" class="btn">⛶ ROUTE OVERVIEW</button>
@@ -229,6 +236,18 @@
     <button id="btnClear" class="btn">✕ CLEAR</button>
     <div id="navStatus">Ready</div>
     </div>
+  </div>
+
+  <!-- ROUTE sub-window: slides out to the right of ROUTE CONTROL -->
+  <div id="routeFly" class="panel" aria-hidden="true">
+    <h3>// ROUTE <button id="btnRouteFlyClose" class="min" title="Close">✕</button></h3>
+    <button id="btnRoute" class="btn">⟲ COMPUTE ROUTE</button>
+    <button id="btnAuto" class="btn">↻ AUTO RECOMPUTE: OFF</button>
+    <div class="sep"></div>
+    <button id="btnExport" class="btn" disabled>⇩ EXPORT ROUTE (.json)</button>
+    <button id="btnImport" class="btn">⇧ IMPORT ROUTE (.json)</button>
+    <input id="fileImport" type="file" accept=".json,application/json" hidden>
+    <div id="routeInfo" class="set-note">No route yet.</div>
   </div>
 
   <div id="right" class="panel">
