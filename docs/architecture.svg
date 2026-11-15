@@ -1,0 +1,80 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 520" font-family="Segoe UI, Arial, sans-serif">
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#5b7a8c"/></marker>
+  </defs>
+  <rect width="960" height="520" fill="#0b1620"/>
+  <text x="480" y="32" fill="#e8fbff" font-size="18" font-weight="bold" text-anchor="middle">Mars Navigation — how the pieces fit</text>
+
+  <!-- browser box -->
+  <rect x="20" y="52" width="560" height="450" rx="10" fill="#0f2230" stroke="#39d7ff" stroke-opacity=".5"/>
+  <text x="36" y="76" fill="#39d7ff" font-size="13" font-weight="bold">Browser (index.html via python -m http.server)</text>
+
+  <g font-size="12">
+    <rect x="40" y="92" width="250" height="70" rx="6" fill="#13324a" stroke="#39d7ff" stroke-opacity=".6"/>
+    <text x="52" y="114" fill="#fff" font-weight="bold">index.html</text>
+    <text x="52" y="132" fill="#b9dcea">map + 2D/3D views, base layers,</text>
+    <text x="52" y="148" fill="#b9dcea">names, landers, HUD panels</text>
+
+    <rect x="310" y="92" width="250" height="70" rx="6" fill="#13324a" stroke="#39d7ff" stroke-opacity=".6"/>
+    <text x="322" y="114" fill="#fff" font-weight="bold">nav.js</text>
+    <text x="322" y="132" fill="#b9dcea">route planner (A*), guidance, camera,</text>
+    <text x="322" y="148" fill="#b9dcea">simulation, settings, export/import</text>
+
+    <rect x="40" y="180" width="160" height="62" rx="6" fill="#13324a" stroke="#ffaa3c" stroke-opacity=".7"/>
+    <text x="52" y="202" fill="#fff" font-weight="bold">craters.js</text>
+    <text x="52" y="220" fill="#b9dcea">crater layer, on demand</text>
+
+    <rect x="214" y="180" width="160" height="62" rx="6" fill="#13324a" stroke="#9dffc6" stroke-opacity=".7"/>
+    <text x="226" y="202" fill="#fff" font-weight="bold">science.js</text>
+    <text x="226" y="220" fill="#b9dcea">NASA Trek layers</text>
+
+    <rect x="388" y="180" width="172" height="62" rx="6" fill="#13324a" stroke="#ffd27a" stroke-opacity=".7"/>
+    <text x="400" y="202" fill="#fff" font-weight="bold">marsclock.js · weather.js</text>
+    <text x="400" y="220" fill="#b9dcea">Mars time, climate lookups</text>
+
+    <rect x="40" y="270" width="250" height="60" rx="6" fill="#102838" stroke="#5b7a8c"/>
+    <text x="52" y="292" fill="#fff" font-weight="bold">mission.geojson</text>
+    <text x="52" y="310" fill="#b9dcea">your points + hazards (local)</text>
+
+    <rect x="310" y="270" width="250" height="60" rx="6" fill="#102838" stroke="#5b7a8c"/>
+    <text x="322" y="292" fill="#fff" font-weight="bold">climate.json</text>
+    <text x="322" y="310" fill="#b9dcea">typical weather table (local)</text>
+
+    <rect x="40" y="352" width="520" height="130" rx="6" fill="#0c1c28" stroke="#5b7a8c" stroke-dasharray="4 3"/>
+    <text x="52" y="374" fill="#e8fbff" font-weight="bold">Route planning (on COMPUTE ROUTE)</text>
+    <text x="52" y="396" fill="#b9dcea">1  search box around start/end → ~90×90 grid</text>
+    <text x="52" y="414" fill="#b9dcea">2  elevation for every cell (one request) + craters in the box (one request)</text>
+    <text x="52" y="432" fill="#b9dcea">3  cost = distance × slope penalty; blocked: steep, hazards, craters</text>
+    <text x="52" y="450" fill="#b9dcea">4  A* → straighten → turn instructions → stats, radiation</text>
+    <text x="52" y="468" fill="#b9dcea">5  time check: each point at its time of passage (clock + climate)</text>
+  </g>
+
+  <!-- services -->
+  <rect x="620" y="52" width="320" height="200" rx="10" fill="#1d2a12" stroke="#9dffc6" stroke-opacity=".5"/>
+  <text x="636" y="76" fill="#9dffc6" font-size="13" font-weight="bold">NASA</text>
+  <g font-size="12" fill="#d8f5e2">
+    <text x="636" y="100">trek.nasa.gov — science tiles</text>
+    <text x="648" y="118" fill="#a9c9b4">THEMIS day/night IR, TES thermal</text>
+    <text x="648" y="134" fill="#a9c9b4">inertia, dust, albedo, minerals,</text>
+    <text x="648" y="150" fill="#a9c9b4">MOLA roughness</text>
+  </g>
+  <rect x="620" y="270" width="320" height="232" rx="10" fill="#2a1a10" stroke="#ffaa3c" stroke-opacity=".5"/>
+  <text x="636" y="294" fill="#ffc88c" font-size="13" font-weight="bold">Other</text>
+  <g font-size="12" fill="#f3dcc8">
+    <text x="636" y="318">astrogeology.usgs.gov — craters</text>
+    <text x="636" y="342">js.arcgis.com — ArcGIS library</text>
+    <text x="636" y="366">astro.arcgis.com — Mars imagery</text>
+    <text x="648" y="382" fill="#cbb29c">+ elevation (route + 3D terrain)</text>
+    <text x="636" y="406">services*.arcgis.com — names,</text>
+    <text x="648" y="422" fill="#cbb29c">landers, quadrangle grid</text>
+  </g>
+
+  <!-- arrows -->
+  <g stroke="#5b7a8c" stroke-width="2" fill="none" marker-end="url(#a)">
+    <path d="M582 150 L614 150"/>
+    <path d="M582 386 L614 386"/>
+  </g>
+  <text x="598" y="140" fill="#8fb0c0" font-size="10" text-anchor="middle">tiles</text>
+  <text x="598" y="376" fill="#8fb0c0" font-size="10" text-anchor="middle">data</text>
+</svg>
