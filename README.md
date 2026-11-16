@@ -22,7 +22,6 @@ temperature, wind, dust and darkness at the moment the vehicle passes each point
 - [File formats](#file-formats)
 - [Limitations](#limitations)
 - [Roadmap](#roadmap)
-- [Screenshots](#screenshots)
 - [Credits and data terms](#credits-and-data-terms)
 
 ---
