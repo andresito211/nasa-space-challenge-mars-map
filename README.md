@@ -5,9 +5,9 @@ astronaut or rover: it avoids steep terrain, craters and hazard zones, gives Waz
 turn-by-turn guidance, simulates the drive, and checks the route against the time of day,
 temperature, wind, dust and darkness at the moment the vehicle passes each point.
 
-![HUD layout (illustration)](docs/hud-layout.png)
+![HUD layout](docs/hud-layout.png)
 
-*Illustration of the HUD layout.*
+*HUD layout.*
 
 ---
 
@@ -36,6 +36,10 @@ temperature, wind, dust and darkness at the moment the vehicle passes each point
 - **Science layers (NASA Mars Trek):** THEMIS day and night infrared (100 m), TES thermal inertia, dust index, surface dust, albedo, minerals (pyroxene, plagioclase, sheet silicates), MOLA roughness.
 - **Crater layer (USGS Robbins database):** loaded only for the area you look at or plan in. Labels are prioritized by size and never overlap.
 
+![2D view](docs/2d-view.png)
+
+*2D view.*
+
 **Route planning**
 - Set the start and destination by **clicking the map** or **searching by name** ("Jezero", "Gale", "Perseverance", …).
 - The planner finds a path that avoids:
@@ -46,11 +50,23 @@ temperature, wind, dust and darkness at the moment the vehicle passes each point
 - **Auto-recompute** on any change, or manual **COMPUTE ROUTE**; outdated routes are shown grey and dashed.
 - **Export / import routes as JSON** to share them.
 
+![Route planning: SET START menu](docs/set-start-menu.png)
+
+*Route planning: SET START menu.*
+
+
 **Navigation and simulation**
 - Turn-by-turn banner ("↰ Turn left in 1.2 km · then ↗ bear right"), progress bar and elevation profile.
 - **Follow camera** (behind and above the vehicle, heading-up) or **route overview** (fit the route, or track the vehicle).
 - Speed in km/h with a time warp; the camera height grows with speed and its tilt follows the climb.
 - The compass arrow head widens when climbing and narrows when descending.
+
+
+![Simulation in weather mode](docs/simulation-weather-mode.png)
+
+*Navigation and simulation, weather mode.*
+
+
 
 **Time and environment**
 - **Mars clock** (NASA Mars24 algorithm): Mars Year, season (Ls) and local solar time at the vehicle.
@@ -92,6 +108,13 @@ elevation, craters and science layers are loaded from the web.
 6. **Drive.** Press **▶ SIMULATE**. Watch the turn banner, compass, progress bar and SIM clock.
    Use **+ / −** to change speed, and switch between **FOLLOW CAM** and **ROUTE OVERVIEW → TRACK**.
 7. **Share.** **⟲ ROUTE ▸ → EXPORT ROUTE** downloads a `.json` file that anyone can **IMPORT**.
+
+---
+
+## Scientific objective
+
+Route from octavia butler landing site to jezero crater to investigate the mineralogical and geological composition of the ancient river delta, focusing on clay-bearing and carbonate-bearing deposits that could have preserved organic compounds or potential biosignatures.
+
 
 ---
 
