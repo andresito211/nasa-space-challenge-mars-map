@@ -112,7 +112,7 @@ elevation, craters and science layers are loaded from the web.
 
 ## Scientific objective
 
-Route from octavia butler landing site to jezero crater to investigate the mineralogical and geological composition of the ancient river delta, focusing on clay-bearing and carbonate-bearing deposits that could have preserved organic compounds or potential biosignatures.
+Route from Octavia E. Butler landing site to Jezero crater to investigate the mineralogical and geological composition of the ancient river delta, focusing on clay-bearing and carbonate-bearing deposits that could have preserved organic compounds or potential biosignatures.
 
 
 ---
